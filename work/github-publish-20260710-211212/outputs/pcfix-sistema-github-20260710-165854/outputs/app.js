@@ -1,6 +1,5 @@
 ﻿const storageKey = "pcfix-system-v1";
 const apiStorageKey = "pcfix-api-config-v1";
-const pendingSyncKey = "pcfix-pending-sync-v1";
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFormat = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const defaultWarrantyTerms = "Garantia de 90 dias sobre la reparacion realizada y las refacciones instaladas por PCFIX, contados a partir de la entrega del equipo. Para hacerla valida, el cliente debe presentar esta orden y permitir revision tecnica. La garantia cubre unicamente la falla corregida o la pieza instalada; no cubre danos por humedad, golpes, descargas electricas, mal uso, software, virus, accesorios externos, manipulacion de terceros, equipos abiertos fuera de PCFIX, sellos retirados, piezas proporcionadas por el cliente ni fallas distintas a las diagnosticadas. Cualquier trabajo adicional requiere diagnostico y autorizacion previa.";
@@ -189,9 +188,6 @@ let apiConfig = loadApiConfig();
 let activeView = "dashboard";
 let syncTimer = null;
 let isPullingFromBackend = false;
-let publicPortalContext = null;
-let syncQueue = loadSyncQueue();
-let isSyncingNow = false;
 
 const ids = [
   "brandName",
@@ -400,12 +396,6 @@ document.addEventListener("DOMContentLoaded", () => {
   hydrateApiForm();
   hydratePortalFromHash();
   render();
-  window.addEventListener("online", () => {
-    updateApiStatus();
-    flushSyncQueue();
-  });
-  window.addEventListener("offline", updateApiStatus);
-  if (apiConfig.serverMode && syncQueue.length) scheduleServerSync(true);
 });
 
 function wireEvents() {
@@ -518,38 +508,8 @@ function loadApiConfig() {
   }
 }
 
-function loadSyncQueue() {
-  try {
-    return JSON.parse(localStorage.getItem(pendingSyncKey) || "[]");
-  } catch {
-    return [];
-  }
-}
-
 function saveApiConfig() {
   localStorage.setItem(apiStorageKey, JSON.stringify(apiConfig));
-}
-
-function saveSyncQueue() {
-  localStorage.setItem(pendingSyncKey, JSON.stringify(syncQueue.slice(-50)));
-}
-
-function markPendingSync(reason = "Cambio local") {
-  if (isPullingFromBackend) return;
-  const pending = {
-    id: id("sync"),
-    reason,
-    at: new Date().toISOString()
-  };
-  syncQueue = [...syncQueue, pending].slice(-50);
-  saveSyncQueue();
-  updateApiStatus();
-}
-
-function clearPendingSync() {
-  syncQueue = [];
-  saveSyncQueue();
-  updateApiStatus();
 }
 
 function isLegacyTheme(theme) {
@@ -558,7 +518,6 @@ function isLegacyTheme(theme) {
 
 function persist() {
   localStorage.setItem(storageKey, JSON.stringify(state));
-  markPendingSync();
   scheduleServerSync();
 }
 
@@ -637,15 +596,8 @@ function hydratePortalFromHash() {
   const queryText = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
   const params = new URLSearchParams(queryText);
   const folio = params.get("folio");
-  const api = params.get("api");
-  publicPortalContext = {
-    folio: folio || "",
-    apiBaseUrl: api ? api.replace(/\/$/, "") : resolvePublicApiBaseUrl()
-  };
   if (folio) el.portalFolio.value = folio;
-  document.body.classList.add("public-portal-mode");
   showView("clientPortal");
-  setTimeout(() => searchClientPortal(), 50);
 }
 
 function renderDashboard() {
@@ -2498,13 +2450,13 @@ function normalizeSearchText(value) {
     .trim();
 }
 
-async function searchClientPortal(event) {
-  event?.preventDefault();
+function searchClientPortal(event) {
+  event.preventDefault();
   const folio = el.portalFolio.value.trim().toLowerCase();
   const phone = normalizePhone(el.portalPhone.value);
   if (!folio && !phone) {
     el.portalStatusPill.textContent = "Dato requerido";
-    el.clientPortalResult.innerHTML = emptyHtml("Ingresa el folio", "Usa el numero de orden que recibiste en tu comprobante.");
+    el.clientPortalResult.innerHTML = emptyHtml("Ingresa un dato", "Puedes consultar con folio de orden o telefono registrado.");
     return;
   }
   const orders = state.orders.filter((item) => {
@@ -2515,33 +2467,11 @@ async function searchClientPortal(event) {
     return folioMatches || phoneMatches;
   });
   if (!orders.length) {
-    if (publicPortalContext?.apiBaseUrl && folio) {
-      await searchPublicPortalOrder(folio);
-      return;
-    }
     el.portalStatusPill.textContent = "No encontrado";
-    el.clientPortalResult.innerHTML = emptyHtml("No encontramos la orden", "Revisa el folio de orden.");
+    el.clientPortalResult.innerHTML = emptyHtml("No encontramos la orden", "Revisa el folio o el telefono registrado.");
     return;
   }
   renderClientPortalOrders(orders);
-}
-
-async function searchPublicPortalOrder(folio) {
-  el.portalStatusPill.textContent = "Consultando";
-  el.clientPortalResult.innerHTML = emptyHtml("Consultando seguimiento", "Estamos buscando el estado de tu reparacion.");
-  try {
-    const response = await fetch(`${publicPortalContext.apiBaseUrl}/api/public/orders/${encodeURIComponent(folio)}`);
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "No se pudo consultar la orden.");
-    renderClientPortalOrders([{
-      ...payload.order,
-      publicClient: payload.client,
-      payments: []
-    }]);
-  } catch (error) {
-    el.portalStatusPill.textContent = "No encontrado";
-    el.clientPortalResult.innerHTML = emptyHtml("No encontramos la orden", error.message);
-  }
 }
 
 function renderClientPortalOrders(orders) {
@@ -2550,11 +2480,10 @@ function renderClientPortalOrders(orders) {
 }
 
 function renderClientPortalOrderCard(order) {
-  const client = order.publicClient || getClient(order.clientId);
+  const client = getClient(order.clientId);
   const balance = getOrderBalance(order);
   const paid = getOrderPaid(order);
   const tracking = getTrackingState(order.status);
-  const isPublic = document.body.classList.contains("public-portal-mode");
   return `<article class="portal-card">
     <div class="portal-hero">
       <div>
@@ -2588,9 +2517,9 @@ function renderClientPortalOrderCard(order) {
       <div><span>Total</span><strong>${money.format(Number(order.total || 0))}</strong></div>
       <div><span>Ultima actualizacion</span><strong>${dateFormat.format(new Date(order.updatedAt || order.createdAt))}</strong></div>
     </div>
-    ${isPublic ? "" : `<div class="record-actions">
+    <div class="record-actions">
       <a class="btn ghost" href="${orderWhatsappUrl(order)}" target="_blank" rel="noreferrer">Contactar por WhatsApp</a>
-    </div>`}
+    </div>
   </article>`;
 }
 
@@ -2648,27 +2577,11 @@ function trackingKey(status) {
     .replace(/\s+/g, "-");
 }
 
-function resolvePublicApiBaseUrl() {
-  if (location.hostname.includes("pcfix-sistema.onrender.com")) return "https://pcfix-backend.onrender.com";
-  if (apiConfig.baseUrl && !apiConfig.baseUrl.includes("localhost") && !apiConfig.baseUrl.includes("127.0.0.1")) {
-    return apiConfig.baseUrl.replace(/\/$/, "");
-  }
-  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") return "http://localhost:8080";
-  return "";
-}
-
-function buildTrackingUrl(order) {
-  const params = new URLSearchParams({ folio: order.folio });
-  const apiBaseUrl = resolvePublicApiBaseUrl();
-  if (apiBaseUrl) params.set("api", apiBaseUrl);
-  return `${location.origin}${location.pathname}#seguimiento?${params.toString()}`;
-}
-
 function sendTrackingWhatsapp(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   const client = getClient(order?.clientId);
   if (!order || !client) return;
-  const url = buildTrackingUrl(order);
+  const url = `${location.origin}${location.pathname}#seguimiento?folio=${encodeURIComponent(order.folio)}`;
   const text = [
     `Hola ${client.name}, te compartimos el seguimiento de tu reparacion en PCFIX.`,
     `Folio: ${order.folio}`,
@@ -2727,7 +2640,7 @@ function openOrderPdf(orderId) {
   const photos = (order.evidencePhotos || []).filter((photo) => photo?.src);
   const paid = getOrderPaid(order);
   const balance = getOrderBalance(order);
-  const trackingUrl = buildTrackingUrl(order);
+  const trackingUrl = `${location.origin}${location.pathname}#seguimiento?folio=${encodeURIComponent(order.folio)}`;
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(trackingUrl)}`;
   el.printArea.innerHTML = `<section class="print-sheet">
     <div class="print-header">
@@ -2965,23 +2878,9 @@ function hydrateApiForm() {
 }
 
 function updateApiStatus() {
-  if (!apiConfig.token) {
-    el.apiStatus.textContent = "Local";
-    return;
-  }
-  if (!navigator.onLine) {
-    el.apiStatus.textContent = `Sin conexion: ${syncQueue.length} pendiente(s)`;
-    return;
-  }
-  if (isSyncingNow) {
-    el.apiStatus.textContent = "Sincronizando...";
-    return;
-  }
-  if (syncQueue.length) {
-    el.apiStatus.textContent = `Pendiente: ${syncQueue.length} cambio(s)`;
-    return;
-  }
-  el.apiStatus.textContent = `${apiConfig.serverMode ? "Servidor" : "Conectado"}: guardado`;
+  el.apiStatus.textContent = apiConfig.token
+    ? `${apiConfig.serverMode ? "Servidor" : "Conectado"}: ${apiConfig.user?.role || "usuario"}`
+    : "Local";
 }
 
 async function loginBackend() {
@@ -3024,10 +2923,7 @@ function toggleServerMode() {
   apiConfig.serverMode = el.serverMode.checked;
   saveApiConfig();
   updateApiStatus();
-  if (apiConfig.serverMode) {
-    markPendingSync("Modo servidor activado");
-    scheduleServerSync(true);
-  }
+  if (apiConfig.serverMode) scheduleServerSync(true);
 }
 
 async function apiRequest(path, options = {}) {
@@ -3058,7 +2954,7 @@ const syncCollections = [
   ["warrantyClaims", "warrantyClaim"]
 ];
 
-async function pushLocalData(confirmFirst = true, options = {}) {
+async function pushLocalData(confirmFirst = true) {
   if (confirmFirst && !confirm("Subir datos locales al backend? Los registros con el mismo ID se actualizaran.")) return;
   try {
     await apiRequest("/api/records/settings", {
@@ -3074,37 +2970,16 @@ async function pushLocalData(confirmFirst = true, options = {}) {
         });
       }
     }
-    clearPendingSync();
-    if (!options.silent) alert("Datos locales subidos al backend.");
-    return true;
+    alert("Datos locales subidos al backend.");
   } catch (error) {
-    if (!options.silent) alert(`No se pudo subir: ${error.message}`);
-    updateApiStatus();
-    return false;
+    alert(`No se pudo subir: ${error.message}`);
   }
 }
 
 function scheduleServerSync(immediate = false) {
   if (!apiConfig.serverMode || !apiConfig.token || isPullingFromBackend) return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(flushSyncQueue, immediate ? 10 : 1200);
-}
-
-async function flushSyncQueue() {
-  if (!apiConfig.serverMode || !apiConfig.token || isPullingFromBackend || isSyncingNow || !syncQueue.length) return;
-  if (!navigator.onLine) {
-    updateApiStatus();
-    return;
-  }
-  isSyncingNow = true;
-  updateApiStatus();
-  const ok = await pushLocalData(false, { silent: true });
-  isSyncingNow = false;
-  updateApiStatus();
-  if (!ok && syncQueue.length) {
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(flushSyncQueue, 30000);
-  }
+  syncTimer = setTimeout(() => pushLocalData(false), immediate ? 10 : 1200);
 }
 
 async function loadBackendUsers() {
