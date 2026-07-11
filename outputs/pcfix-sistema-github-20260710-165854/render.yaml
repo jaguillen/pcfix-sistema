@@ -10,9 +10,8 @@ services:
       - key: JWT_SECRET
         generateValue: true
 
-  - type: web
+  - type: static
     name: pcfix-sistema
-    runtime: static
     rootDir: outputs
     buildCommand: ""
     staticPublishPath: .

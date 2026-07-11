@@ -38,7 +38,6 @@ Render detectara dos servicios:
 
 2. `pcfix-sistema`
    - Usa `outputs`
-   - Tipo `web` con `runtime: static`
    - Publica `index.html`, `app.js`, `styles.css`
 
 ## Pasos en Render
