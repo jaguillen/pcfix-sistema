@@ -143,8 +143,17 @@ async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const db = readDb();
 
-  if (url.pathname === "/api/health") return send(res, 200, { ok: true, mode: "no-npm", at: now() });
-
+ if (url.pathname === "/" || url.pathname === "/health" || url.pathname === "/api/health") {
+  return send(res, 200, {
+    ok: true,
+    service: "PCFix backend",
+    mode: "no-npm",
+    login: "/api/auth/login",
+    health: "/api/health",
+    at: now()
+  });
+}
+  
   if (url.pathname === "/api/auth/login" && req.method === "POST") {
     const body = await readBody(req);
     const user = db.users.find((item) => item.email === String(body.email || "").toLowerCase() && item.active);
