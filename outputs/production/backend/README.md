@@ -1,6 +1,8 @@
 # PCFix Backend de Produccion
 
-Backend opcional para operar PCFix en varias computadoras con usuarios, roles, base SQLite, auditoria, archivos y WhatsApp Cloud API.
+Backend opcional para operar PCFix en varias computadoras con usuarios, roles, base SQLite/Postgres, auditoria, archivos y WhatsApp Cloud API.
+
+Para produccion en Render se recomienda `src/server-postgres.js` con Supabase o Neon.
 
 ## Instalacion
 
@@ -10,6 +12,30 @@ copy .env.example .env
 npm install
 npm run init
 npm start
+```
+
+## Produccion con Postgres
+
+Configura:
+
+```env
+DATABASE_URL=postgresql://...
+ADMIN_EMAIL=admin@pcfix.local
+ADMIN_PASSWORD=pon-una-clave-segura
+JWT_SECRET=clave-larga-aleatoria
+```
+
+Inicia con:
+
+```bash
+npm install
+node src/server-postgres.js
+```
+
+Guia completa:
+
+```text
+outputs/production/SUPABASE-POSTGRES.md
 ```
 
 Credenciales iniciales por defecto:
@@ -68,4 +94,4 @@ https://tu-dominio.com/api/whatsapp/webhook
 - Respaldar `pcfix.sqlite` y `uploads/`.
 - Proteger `.env`.
 - Cambiar contrasenas iniciales.
-- Para alto volumen, migrar de SQLite a PostgreSQL.
+- Para produccion real, usar PostgreSQL con `src/server-postgres.js`.

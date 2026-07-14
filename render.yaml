@@ -3,12 +3,18 @@ services:
     name: pcfix-backend
     runtime: node
     plan: free
-    rootDir: outputs/production/no-npm-backend
-    buildCommand: ""
-    startCommand: node server.js
+    rootDir: outputs/production/backend
+    buildCommand: npm install
+    startCommand: node src/server-postgres.js
     envVars:
       - key: JWT_SECRET
         generateValue: true
+      - key: ADMIN_EMAIL
+        value: admin@pcfix.local
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
 
   - type: web
     name: pcfix-sistema

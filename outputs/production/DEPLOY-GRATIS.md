@@ -32,9 +32,10 @@ Ya se agrego `render.yaml` en la raiz del proyecto.
 Render detectara dos servicios:
 
 1. `pcfix-backend`
-   - Usa `outputs/production/no-npm-backend`
-   - No necesita `npm install`
-   - Comando: `node server.js`
+   - Usa `outputs/production/backend`
+   - Instala dependencias con `npm install`
+   - Comando: `node src/server-postgres.js`
+   - Requiere `DATABASE_URL` de Supabase/Neon/Postgres
 
 2. `pcfix-sistema`
    - Usa `outputs`
@@ -87,19 +88,20 @@ Cambiar123!
 
 ## Limitacion del plan gratis
 
-El backend sin npm guarda datos en:
+El backend anterior sin npm guarda datos en:
 
 ```text
 data/pcfix-data.json
 ```
 
 En hosting gratuito, el almacenamiento local puede no ser permanente al reiniciar o redeployar.
-El sistema ya incluye cola de sincronizacion online-first y respaldos locales del JSON, pero para uso real debes migrar a una base externa como Supabase o Neon, o contratar almacenamiento persistente.
+Por eso la configuracion actual usa Postgres externo mediante `DATABASE_URL`.
 
 Lee tambien:
 
 ```text
 outputs/production/ONLINE-FIRST.md
+outputs/production/SUPABASE-POSTGRES.md
 ```
 
 ## Alternativa estatica solamente

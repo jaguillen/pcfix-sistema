@@ -1,6 +1,7 @@
 ﻿const storageKey = "pcfix-system-v1";
 const apiStorageKey = "pcfix-api-config-v1";
 const pendingSyncKey = "pcfix-pending-sync-v1";
+const localSnapshotKey = "pcfix-local-snapshots-v1";
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFormat = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const defaultWarrantyTerms = "Garantia de 90 dias sobre la reparacion realizada y las refacciones instaladas por PCFIX, contados a partir de la entrega del equipo. Para hacerla valida, el cliente debe presentar esta orden y permitir revision tecnica. La garantia cubre unicamente la falla corregida o la pieza instalada; no cubre danos por humedad, golpes, descargas electricas, mal uso, software, virus, accesorios externos, manipulacion de terceros, equipos abiertos fuera de PCFIX, sellos retirados, piezas proporcionadas por el cliente ni fallas distintas a las diagnosticadas. Cualquier trabajo adicional requiere diagnostico y autorizacion previa.";
@@ -404,6 +405,7 @@ document.addEventListener("DOMContentLoaded", () => {
   hydrateApiForm();
   hydratePortalFromHash();
   render();
+  autoRecoverFromBackendIfEmpty();
   window.addEventListener("online", () => {
     updateApiStatus();
     flushSyncQueue();
@@ -564,6 +566,35 @@ function clearPendingSync() {
   syncQueue = [];
   saveSyncQueue();
   updateApiStatus();
+}
+
+function countBusinessRecords(source = state) {
+  return ["clients", "orders", "inventory", "suppliers", "appointments", "purchases", "payments", "warrantyClaims"]
+    .reduce((sum, key) => sum + (Array.isArray(source[key]) ? source[key].filter((item) => !item.archived).length : 0), 0);
+}
+
+function saveLocalSnapshot(reason = "Respaldo automatico") {
+  const snapshots = loadLocalSnapshots();
+  snapshots.unshift({
+    id: id("snap"),
+    reason,
+    at: new Date().toISOString(),
+    recordCount: countBusinessRecords(),
+    data: state
+  });
+  localStorage.setItem(localSnapshotKey, JSON.stringify(snapshots.slice(0, 10)));
+}
+
+function loadLocalSnapshots() {
+  try {
+    return JSON.parse(localStorage.getItem(localSnapshotKey) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function isLocalStateEmpty() {
+  return countBusinessRecords() === 0;
 }
 
 function isLegacyTheme(theme) {
@@ -3094,7 +3125,12 @@ async function loginBackend() {
     saveApiConfig();
     updateApiStatus();
     loadBackendUsers();
-    alert("Backend conectado.");
+    if (isLocalStateEmpty()) {
+      const recovered = await pullBackendData({ silent: true });
+      alert(recovered ? "Backend conectado y datos recuperados." : "Backend conectado. No se encontraron datos para recuperar.");
+    } else {
+      alert("Backend conectado.");
+    }
   } catch (error) {
     alert(`Error de conexion: ${error.message}`);
   }
@@ -3153,6 +3189,11 @@ const syncCollections = [
 ];
 
 async function pushLocalData(confirmFirst = true, options = {}) {
+  if (countBusinessRecords() === 0 && !options.allowEmpty) {
+    if (options.silent) return false;
+    const ok = confirm("La copia local no tiene clientes, ordenes ni inventario. Subirla podria dejar el backend vacio. Deseas continuar?");
+    if (!ok) return false;
+  }
   if (confirmFirst && !confirm("Subir datos locales al backend? Los registros con el mismo ID se actualizaran.")) return;
   try {
     await apiRequest("/api/records/settings", {
@@ -3258,9 +3299,10 @@ async function deactivateBackendUser(userId) {
   }
 }
 
-async function pullBackendData() {
-  if (!confirm("Descargar datos del backend y reemplazar los datos locales actuales?")) return;
+async function pullBackendData(options = {}) {
+  if (!options.silent && !confirm("Descargar datos del backend y reemplazar los datos locales actuales?")) return;
   try {
+    if (!isLocalStateEmpty()) saveLocalSnapshot("Antes de descargar backend");
     const nextState = structuredClone(defaultState);
     const settingsRows = await apiRequest("/api/records/settings");
     if (settingsRows[0]?.data) {
@@ -3276,6 +3318,10 @@ async function pullBackendData() {
       const rows = await apiRequest(`/api/records/${apiType}`);
       nextState[stateKey] = rows.map((row) => row.data || row);
     }
+    if (countBusinessRecords(nextState) === 0 && !isLocalStateEmpty()) {
+      if (!options.silent) alert("El backend no devolvio registros. No se reemplazaron tus datos locales.");
+      return false;
+    }
     isPullingFromBackend = true;
     state = nextState;
     persist();
@@ -3283,10 +3329,19 @@ async function pullBackendData() {
     applyTheme();
     hydrateSettingsForm();
     render();
-    alert("Datos descargados del backend.");
+    if (!options.silent) alert("Datos descargados del backend.");
+    return true;
   } catch (error) {
-    alert(`No se pudo descargar: ${error.message}`);
+    if (!options.silent) alert(`No se pudo descargar: ${error.message}`);
+    return false;
   }
+}
+
+async function autoRecoverFromBackendIfEmpty() {
+  if (!isLocalStateEmpty() || !apiConfig.token || !apiConfig.baseUrl || !navigator.onLine) return;
+  el.apiStatus.textContent = "Recuperando backend...";
+  await pullBackendData({ silent: true });
+  updateApiStatus();
 }
 
 function emptyHtml(title = "Sin registros", detail = "Agrega informacion para comenzar.") {
