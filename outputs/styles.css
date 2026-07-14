@@ -1008,13 +1008,294 @@ code {
   justify-content: center;
 }
 
-.tracking-visual span {
+.status-animation {
+  position: relative;
+  width: 112px;
+  height: 82px;
+  flex: 0 0 112px;
+  border: 1px solid rgba(11, 59, 99, 0.08);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f5fbfd 100%);
+  box-shadow: inset 0 -18px 24px rgba(11, 59, 99, 0.04);
+}
+
+.status-animation span {
+  position: absolute;
   display: block;
-  width: 10px;
-  height: 10px;
+}
+
+.device-mini,
+.ready-phone {
+  left: 43px;
+  top: 18px;
+  width: 26px;
+  height: 42px;
+  border: 3px solid var(--brand);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 18px rgba(11, 59, 99, 0.12);
+}
+
+.device-mini::before,
+.ready-phone::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 5px;
+  height: 3px;
+  border-radius: 999px;
+  background: #dbe4ee;
+}
+
+.device-mini::after,
+.ready-phone::after {
+  content: "";
+  position: absolute;
+  left: 9px;
+  bottom: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 999px;
   background: var(--accent);
-  opacity: 0.35;
+}
+
+.status-wave {
+  left: 30px;
+  top: 32px;
+  width: 52px;
+  height: 24px;
+  border: 2px solid var(--accent);
+  border-left: 0;
+  border-bottom: 0;
+  border-radius: 0 999px 0 0;
+  opacity: 0.4;
+  animation: portal-wave 1.6s ease-out infinite;
+}
+
+.status-dot {
+  top: 60px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: portal-dot 1.2s ease-in-out infinite;
+}
+
+.status-dot.one {
+  left: 40px;
+}
+
+.status-dot.two {
+  left: 64px;
+  animation-delay: 0.18s;
+}
+
+.scan-line {
+  left: 33px;
+  top: 16px;
+  width: 46px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(32, 199, 216, 0.48);
+  animation: portal-scan-line 1.4s ease-in-out infinite;
+}
+
+.lens {
+  right: 27px;
+  bottom: 18px;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--accent);
+  border-radius: 999px;
+  animation: portal-lens 1.4s ease-in-out infinite;
+}
+
+.lens::after {
+  content: "";
+  position: absolute;
+  right: -8px;
+  bottom: -5px;
+  width: 12px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: rotate(45deg);
+}
+
+.device-mini.open {
+  transform: rotate(-6deg);
+}
+
+.tool-line {
+  width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--brand-strong);
+  transform-origin: center;
+  animation: portal-tool 0.9s ease-in-out infinite;
+}
+
+.tool-line.a {
+  left: 28px;
+  top: 26px;
+  transform: rotate(-36deg);
+}
+
+.tool-line.b {
+  right: 24px;
+  top: 44px;
+  transform: rotate(34deg);
+  animation-delay: 0.12s;
+}
+
+.spark {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: portal-spark 0.9s ease-in-out infinite;
+}
+
+.spark.one {
+  left: 57px;
+  top: 33px;
+}
+
+.spark.two {
+  left: 67px;
+  top: 43px;
+  animation-delay: 0.18s;
+}
+
+.box {
+  left: 24px;
+  bottom: 16px;
+  width: 28px;
+  height: 24px;
+  border: 2px solid #d89b16;
+  border-radius: 6px;
+  background: #fff8e6;
+  animation: portal-box 1.8s ease-in-out infinite;
+}
+
+.box::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: -2px;
+  width: 10px;
+  height: 24px;
+  border-left: 2px solid #d89b16;
+  border-right: 2px solid #d89b16;
+}
+
+.clock-hand {
+  right: 25px;
+  top: 23px;
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--warn);
+  border-radius: 999px;
+}
+
+.clock-hand::before,
+.clock-hand::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 5px;
+  width: 3px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--warn);
+  transform-origin: 50% 9px;
+  animation: portal-clock 2s linear infinite;
+}
+
+.clock-hand::after {
+  top: 12px;
+  height: 8px;
+  transform: rotate(90deg);
+  animation: none;
+}
+
+.counter {
+  left: 21px;
+  right: 21px;
+  bottom: 14px;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(11, 59, 99, 0.14), rgba(32, 199, 216, 0.22));
+}
+
+.ready-phone {
+  left: 42px;
+  top: 15px;
+  animation: portal-ready-phone 1.7s ease-in-out infinite;
+}
+
+.pickup-ring {
+  left: 34px;
+  top: 8px;
+  width: 44px;
+  height: 44px;
+  border: 2px solid var(--accent);
+  border-radius: 999px;
+  opacity: 0.4;
+  animation: portal-pickup-ring 1.7s ease-out infinite;
+}
+
+.ready-check {
+  right: 24px;
+  top: 19px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 8px 16px rgba(32, 199, 216, 0.24);
+}
+
+.ready-check::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  width: 9px;
+  height: 5px;
+  border-left: 3px solid #ffffff;
+  border-bottom: 3px solid #ffffff;
+  transform: rotate(-45deg);
+}
+
+.device-mini.delivered {
+  animation: portal-delivered 1.8s ease-in-out infinite;
+}
+
+.hand-off {
+  left: 23px;
+  bottom: 20px;
+  width: 34px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--brand);
+  animation: portal-handoff 1.8s ease-in-out infinite;
+}
+
+.device-mini.muted {
+  border-color: #94a3b8;
+  opacity: 0.7;
+}
+
+.cancel-line {
+  left: 30px;
+  top: 39px;
+  width: 54px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--danger);
+  transform: rotate(-34deg);
 }
 
 .tracking-timeline {
@@ -1088,44 +1369,9 @@ code {
   animation: tracking-pulse 1.8s ease-in-out infinite;
 }
 
-.tracking-summary.recibido .tracking-visual span {
-  animation: tracking-dots 1.4s ease-in-out infinite;
-}
-
-.tracking-summary.diagnostico .tracking-visual span {
-  animation: tracking-scan 1.2s ease-in-out infinite;
-}
-
-.tracking-summary.en-reparacion .tracking-visual span {
-  animation: tracking-work 0.9s ease-in-out infinite;
-}
-
-.tracking-summary.esperando-pieza .tracking-visual span {
-  background: var(--warn);
-  animation: tracking-wait 1.6s ease-in-out infinite;
-}
-
-.tracking-summary.listo .tracking-visual span,
-.tracking-summary.entregado .tracking-visual span {
-  background: var(--accent);
-  opacity: 0.8;
-}
-
-.tracking-summary.listo .tracking-visual span {
-  animation: tracking-ready 1.5s ease-in-out infinite;
-}
-
 .tracking-timeline.en-reparacion .tracking-line,
 .tracking-timeline.diagnostico .tracking-line {
   animation: tracking-line-flow 2.2s linear infinite;
-}
-
-.tracking-visual span:nth-child(2) {
-  animation-delay: 0.16s;
-}
-
-.tracking-visual span:nth-child(3) {
-  animation-delay: 0.32s;
 }
 
 @keyframes tracking-pulse {
@@ -1139,7 +1385,21 @@ code {
   }
 }
 
-@keyframes tracking-dots {
+@keyframes portal-wave {
+  0% {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+  70% {
+    opacity: 0.45;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.28);
+  }
+}
+
+@keyframes portal-dot {
   0%, 100% {
     opacity: 0.3;
     transform: translateY(0);
@@ -1150,45 +1410,94 @@ code {
   }
 }
 
-@keyframes tracking-scan {
+@keyframes portal-scan-line {
   0%, 100% {
-    opacity: 0.35;
-    transform: scaleX(1);
+    transform: translateY(0);
   }
   50% {
-    opacity: 1;
-    transform: scaleX(1.8);
+    transform: translateY(38px);
   }
 }
 
-@keyframes tracking-work {
-  0%, 100% {
-    transform: rotate(0deg) scale(1);
-    opacity: 0.45;
-  }
-  50% {
-    transform: rotate(10deg) scale(1.12);
-    opacity: 1;
-  }
-}
-
-@keyframes tracking-wait {
-  0%, 100% {
-    opacity: 0.28;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@keyframes tracking-ready {
+@keyframes portal-lens {
   0%, 100% {
     transform: scale(1);
-    opacity: 0.5;
   }
   50% {
-    transform: scale(1.18);
+    transform: scale(1.08);
+  }
+}
+
+@keyframes portal-tool {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgba(32, 199, 216, 0));
+  }
+  50% {
+    filter: drop-shadow(0 5px 6px rgba(32, 199, 216, 0.35));
+  }
+}
+
+@keyframes portal-spark {
+  0%, 100% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  50% {
     opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
+@keyframes portal-box {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(5px);
+  }
+}
+
+@keyframes portal-clock {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes portal-ready-phone {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes portal-pickup-ring {
+  0% {
+    opacity: 0.38;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.45);
+  }
+}
+
+@keyframes portal-delivered {
+  0%, 100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  50% {
+    transform: translateX(6px) rotate(4deg);
+  }
+}
+
+@keyframes portal-handoff {
+  0%, 100% {
+    transform: translateX(-2px);
+  }
+  50% {
+    transform: translateX(5px);
   }
 }
 

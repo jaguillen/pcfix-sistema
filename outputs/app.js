@@ -2687,11 +2687,7 @@ function renderClientPortalOrderCard(order) {
         <span>Avance de reparacion</span>
         <strong>${tracking.percent}%</strong>
       </div>
-      <div class="tracking-visual" aria-hidden="true">
-        <span></span>
-        <span></span>
-        <span></span>
-      </div>
+      ${renderPortalStatusAnimation(tracking)}
       <p>${escapeHtml(tracking.message)}</p>
     </div>
     ${renderPortalTimeline(order.status)}
@@ -2712,6 +2708,47 @@ function renderClientPortalOrderCard(order) {
       <a class="btn ghost" href="${orderWhatsappUrl(order)}" target="_blank" rel="noreferrer">Contactar por WhatsApp</a>
     </div>`}
   </article>`;
+}
+
+function renderPortalStatusAnimation(tracking) {
+  const key = tracking.key || "recibido";
+  const visual = {
+    recibido: `
+      <span class="device-mini"></span>
+      <span class="status-wave"></span>
+      <span class="status-dot one"></span>
+      <span class="status-dot two"></span>`,
+    diagnostico: `
+      <span class="device-mini"></span>
+      <span class="scan-line"></span>
+      <span class="lens"></span>`,
+    "en-reparacion": `
+      <span class="device-mini open"></span>
+      <span class="tool-line a"></span>
+      <span class="tool-line b"></span>
+      <span class="spark one"></span>
+      <span class="spark two"></span>`,
+    "esperando-pieza": `
+      <span class="box"></span>
+      <span class="device-mini"></span>
+      <span class="clock-hand"></span>`,
+    listo: `
+      <span class="counter"></span>
+      <span class="ready-phone"></span>
+      <span class="pickup-ring"></span>
+      <span class="ready-check"></span>`,
+    entregado: `
+      <span class="device-mini delivered"></span>
+      <span class="hand-off"></span>
+      <span class="ready-check"></span>`,
+    cancelado: `
+      <span class="device-mini muted"></span>
+      <span class="cancel-line"></span>`
+  }[key] || `
+      <span class="device-mini"></span>
+      <span class="status-wave"></span>`;
+
+  return `<div class="tracking-visual status-animation ${key}" aria-hidden="true">${visual}</div>`;
 }
 
 function renderPortalStatusEvidence(order) {
