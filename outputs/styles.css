@@ -777,6 +777,27 @@ th {
   gap: 10px;
 }
 
+.status-evidence-box {
+  display: grid;
+  gap: 8px;
+  min-width: 260px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.status-evidence-box > span {
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.status-evidence-box p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .signature-pad {
   width: 100%;
   min-height: 160px;
@@ -787,6 +808,10 @@ th {
 }
 
 .photo-uploader input {
+  display: none;
+}
+
+.status-evidence-box input {
   display: none;
 }
 
@@ -1195,6 +1220,56 @@ code {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.portal-evidence {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.portal-section-head,
+.portal-evidence-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.portal-section-head span,
+.portal-evidence-meta span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.portal-evidence-entry {
+  display: grid;
+  gap: 9px;
+}
+
+.portal-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 9px;
+}
+
+.portal-photo {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.portal-photo img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
 }
 
 .status {

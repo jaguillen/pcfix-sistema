@@ -265,6 +265,9 @@ const ids = [
   "statusOrderId",
   "statusOrderSummary",
   "statusOnlySelect",
+  "addStatusEvidencePhoto",
+  "statusEvidencePhotoInput",
+  "statusEvidencePhotoList",
   "cancelStatusEdit",
   "orderList",
   "orderCount",
@@ -394,6 +397,7 @@ const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)])
 
 document.addEventListener("DOMContentLoaded", () => {
   wireEvents();
+  registerServiceWorker();
   el.today.textContent = dateFormat.format(new Date());
   applyTheme();
   hydrateSettingsForm();
@@ -407,6 +411,14 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("offline", updateApiStatus);
   if (apiConfig.serverMode && syncQueue.length) scheduleServerSync(true);
 });
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
+  navigator.serviceWorker.register("./service-worker.js").catch(() => {
+    // La app sigue funcionando aunque el navegador no permita cache instalable.
+  });
+}
 
 function wireEvents() {
   document.querySelectorAll("[data-view]").forEach((button) => {
@@ -428,6 +440,8 @@ function wireEvents() {
   el.newOrderInlineBtn.addEventListener("click", showNewOrderForm);
   el.orderStatusForm.addEventListener("submit", saveOrderStatus);
   el.cancelStatusEdit.addEventListener("click", hideStatusEditor);
+  el.addStatusEvidencePhoto.addEventListener("click", () => el.statusEvidencePhotoInput.click());
+  el.statusEvidencePhotoInput.addEventListener("change", addStatusEvidencePhotos);
   el.quickIssue.addEventListener("change", applyQuickIssue);
   el.patternSize.addEventListener("change", () => setPattern([], Number(el.patternSize.value)));
   el.clearPattern.addEventListener("click", () => setPattern([], Number(el.patternSize.value)));
@@ -1367,6 +1381,28 @@ function setEvidencePhotos(photos) {
     : `<span class="part-empty">Sin fotos agregadas</span>`;
 }
 
+function getStatusEvidencePhotos() {
+  return [...el.statusEvidencePhotoList.querySelectorAll("[data-photo-src]")].map((node) => ({
+    name: node.dataset.photoName || "estatus.jpg",
+    src: node.dataset.photoSrc
+  }));
+}
+
+function setStatusEvidencePhotos(photos) {
+  const safePhotos = (photos || []).filter((photo) => photo?.src).slice(0, 6);
+  el.statusEvidencePhotoList.innerHTML = safePhotos.length
+    ? safePhotos.map((photo, index) => `<figure class="photo-chip" data-photo-src="${escapeAttr(photo.src)}" data-photo-name="${escapeAttr(photo.name || "estatus.jpg")}">
+        <img src="${escapeAttr(photo.src)}" alt="Evidencia de estatus ${index + 1}">
+        <figcaption>${escapeHtml(photo.name || `Foto ${index + 1}`)}</figcaption>
+        <button type="button" aria-label="Quitar foto" onclick="removeStatusEvidencePhoto(${index})">x</button>
+      </figure>`).join("")
+    : `<span class="part-empty">Sin fotos agregadas</span>`;
+}
+
+function removeStatusEvidencePhoto(index) {
+  setStatusEvidencePhotos(getStatusEvidencePhotos().filter((_, itemIndex) => itemIndex !== index));
+}
+
 async function addEvidencePhotos(event) {
   const files = [...(event.target.files || [])].filter((file) => file.type.startsWith("image/"));
   if (!files.length) return;
@@ -1381,6 +1417,23 @@ async function addEvidencePhotos(event) {
   setEvidencePhotos([...current, ...compressed]);
   event.target.value = "";
 }
+
+async function addStatusEvidencePhotos(event) {
+  const files = [...(event.target.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (!files.length) return;
+  const current = getStatusEvidencePhotos();
+  const remaining = Math.max(0, 6 - current.length);
+  if (!remaining) {
+    alert("Puedes agregar hasta 6 fotos por cambio de estatus.");
+    event.target.value = "";
+    return;
+  }
+  const compressed = await Promise.all(files.slice(0, remaining).map(compressEvidencePhoto));
+  setStatusEvidencePhotos([...current, ...compressed]);
+  event.target.value = "";
+}
+
+window.removeStatusEvidencePhoto = removeStatusEvidencePhoto;
 
 function compressEvidencePhoto(file) {
   return new Promise((resolve) => {
@@ -2064,6 +2117,7 @@ function editOrderStatus(orderId) {
   el.statusOrderId.value = order.id;
   el.statusOrderSummary.textContent = `${order.folio} | ${client?.name || "Sin cliente"} | ${order.device}`;
   el.statusOnlySelect.value = order.status;
+  setStatusEvidencePhotos([]);
   el.orderStatusForm.classList.remove("is-hidden");
   showView("orders");
 }
@@ -2074,13 +2128,24 @@ function saveOrderStatus(event) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return;
   const nextStatus = el.statusOnlySelect.value;
+  const statusPhotos = getStatusEvidencePhotos();
+  const statusEvidencePhotos = statusPhotos.length
+    ? [...(order.statusEvidencePhotos || []), {
+        id: id("sev"),
+        status: nextStatus,
+        at: new Date().toISOString(),
+        user: apiConfig.user?.name || "Local",
+        photos: statusPhotos
+      }]
+    : (order.statusEvidencePhotos || []);
   const updatedOrder = {
     ...order,
     status: nextStatus,
     deposit: nextStatus === "Entregado" ? Number(order.total || 0) : order.deposit,
     paid: nextStatus === "Entregado" ? true : order.paid,
     updatedAt: new Date().toISOString(),
-    statusHistory: buildStatusHistory(order, nextStatus)
+    statusHistory: buildStatusHistory(order, nextStatus),
+    statusEvidencePhotos
   };
   state.orders = state.orders.map((item) =>
     item.id === orderId
@@ -2121,6 +2186,7 @@ function hideStatusEditor() {
   el.orderStatusForm.classList.add("is-hidden");
   el.statusOrderId.value = "";
   el.statusOrderSummary.textContent = "Orden";
+  setStatusEvidencePhotos([]);
 }
 
 function archiveOrder(orderId) {
@@ -2576,6 +2642,7 @@ function renderClientPortalOrderCard(order) {
       <p>${escapeHtml(tracking.message)}</p>
     </div>
     ${renderPortalTimeline(order.status)}
+    ${renderPortalStatusEvidence(order)}
     <div class="portal-details">
       <div><span>Cliente</span><strong>${escapeHtml(client?.name || "Cliente")}</strong></div>
       <div><span>Equipo</span><strong>${escapeHtml(order.device)}</strong></div>
@@ -2592,6 +2659,31 @@ function renderClientPortalOrderCard(order) {
       <a class="btn ghost" href="${orderWhatsappUrl(order)}" target="_blank" rel="noreferrer">Contactar por WhatsApp</a>
     </div>`}
   </article>`;
+}
+
+function renderPortalStatusEvidence(order) {
+  const entries = (order.statusEvidencePhotos || [])
+    .filter((entry) => (entry.photos || []).some((photo) => photo?.src))
+    .slice()
+    .reverse();
+  if (!entries.length) return "";
+  return `<section class="portal-evidence">
+    <div class="portal-section-head">
+      <strong>Evidencia fotografica</strong>
+      <span>${entries.reduce((sum, entry) => sum + (entry.photos || []).length, 0)} foto(s)</span>
+    </div>
+    ${entries.map((entry) => `<article class="portal-evidence-entry">
+      <div class="portal-evidence-meta">
+        <strong>${escapeHtml(entry.status || "Actualizacion")}</strong>
+        <span>${entry.at ? dateFormat.format(new Date(entry.at)) : "Fecha no registrada"}</span>
+      </div>
+      <div class="portal-photo-grid">
+        ${(entry.photos || []).filter((photo) => photo?.src).map((photo, index) => `<a href="${escapeAttr(photo.src)}" target="_blank" rel="noreferrer" class="portal-photo">
+          <img src="${escapeAttr(photo.src)}" alt="Evidencia ${escapeAttr(entry.status || "")} ${index + 1}">
+        </a>`).join("")}
+      </div>
+    </article>`).join("")}
+  </section>`;
 }
 
 function renderPortalTimeline(status) {

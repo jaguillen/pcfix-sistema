@@ -203,7 +203,8 @@ async function handle(req, res) {
         deposit: order.deposit,
         createdAt: order.createdAt,
         updatedAt: order.updatedAt,
-        statusHistory: order.statusHistory || []
+        statusHistory: order.statusHistory || [],
+        statusEvidencePhotos: order.statusEvidencePhotos || []
       },
       client: {
         name: client?.name || "Cliente"

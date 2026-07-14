@@ -6,6 +6,7 @@ Como abrirlo:
 3. Coloca el logotipo original en outputs/assets/logo-pcfix.png para que aparezca en el panel.
 4. Si ya iniciaste el backend, entra a Admin > Conexion backend, presiona Conectar y usa Subir datos locales o Descargar backend.
 5. Para abrir backend y sistema juntos usa iniciar-produccion-pcfix.bat.
+6. Para instalar en Android publica con HTTPS y abre la guia outputs/ANDROID.md.
 
 Funciones incluidas:
 - Registro y edicion de clientes.
@@ -38,6 +39,7 @@ Funciones incluidas:
 - Inventario por marca y modelo, con autocompletado de marcas/modelos comerciales comunes.
 - Categorias comunes para talleres de computadoras y celulares, con filtro y accesos rapidos.
 - Panel administrativo con metricas, margen estimado, agenda proxima, compras pendientes, respaldos JSON y restauracion.
+- App instalable en Android como PWA con manifest, service worker e icono.
 
 Notas:
 - Los datos se guardan en localStorage del navegador.

@@ -1,0 +1,34 @@
+{
+  "name": "PCFix Comitan",
+  "short_name": "PCFix",
+  "description": "Sistema administrativo de reparaciones, clientes, inventario y seguimiento.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FFFFFF",
+  "theme_color": "#0B3B63",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "assets/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nueva orden",
+      "short_name": "Orden",
+      "url": "./index.html#orders",
+      "description": "Abrir el modulo de ordenes"
+    },
+    {
+      "name": "Portal cliente",
+      "short_name": "Seguimiento",
+      "url": "./index.html#seguimiento",
+      "description": "Consultar seguimiento de reparacion"
+    }
+  ]
+}

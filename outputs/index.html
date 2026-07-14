@@ -4,6 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFIX | Sistema administrativo</title>
+    <meta name="theme-color" content="#0B3B63">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="PCFix">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="assets/app-icon.svg">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -311,6 +318,13 @@
                     <option>Cancelado</option>
                   </select>
                 </label>
+                <div class="status-evidence-box">
+                  <span>Evidencia fotografica del estatus</span>
+                  <p>Agrega fotos del avance, refaccion instalada, pruebas o entrega.</p>
+                  <button class="btn ghost" type="button" id="addStatusEvidencePhoto">Anadir foto</button>
+                  <input id="statusEvidencePhotoInput" type="file" accept="image/*" multiple>
+                  <div id="statusEvidencePhotoList" class="photo-list"></div>
+                </div>
                 <div class="form-actions">
                   <button class="btn ghost" type="button" id="cancelStatusEdit">Cancelar</button>
                   <button class="btn primary" type="submit">Guardar estatus</button>
