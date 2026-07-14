@@ -2095,7 +2095,7 @@ function saveOrder(event) {
   applyOrderInventoryMovements(payload, existing);
   logAction(existing ? "Orden actualizada" : "Orden creada", payload.folio, payload.id);
   persist();
-  autoQuoteMissingParts(payload);
+  autoQuoteMissingParts(payload).catch((error) => alert(`No se pudo cotizar automaticamente: ${error.message}`));
   resetOrderForm();
   hideOrderForm();
   render();
@@ -2155,7 +2155,7 @@ function editOrderStatus(orderId) {
   showView("orders");
 }
 
-function saveOrderStatus(event) {
+async function saveOrderStatus(event) {
   event.preventDefault();
   const orderId = el.statusOrderId.value;
   const order = state.orders.find((item) => item.id === orderId);
@@ -2201,18 +2201,19 @@ function saveOrderStatus(event) {
   }
   logAction("Estatus actualizado", `${order.folio}: ${order.status} -> ${nextStatus}`, orderId);
   persist();
-  notifyClientStatusChange(updatedOrder);
+  await notifyClientStatusChange(updatedOrder);
   hideStatusEditor();
   render();
 }
 
-function notifyClientStatusChange(order) {
+async function notifyClientStatusChange(order) {
   const client = getClient(order.clientId);
   if (!client?.phone) {
     alert("Estatus actualizado. El cliente no tiene telefono para WhatsApp.");
     return;
   }
-  window.open(orderWhatsappUrl(order), "_blank", "noreferrer");
+  const sent = await sendWhatsappMessage(client.phone, buildOrderStatusMessage(order), orderWhatsappUrl(order), "el aviso de estatus");
+  alert(sent ? "Estatus actualizado y WhatsApp enviado automaticamente." : "Estatus actualizado. WhatsApp se abrio para envio manual.");
 }
 
 function hideStatusEditor() {
@@ -2500,19 +2501,47 @@ function supplierWhatsappUrl(supplier, text) {
   return `https://wa.me/${normalizePhone(supplier.phone)}?text=${encodeURIComponent(text)}`;
 }
 
-function orderWhatsappUrl(order) {
+async function sendWhatsappMessage(phone, text, fallbackUrl, context = "mensaje") {
+  const to = normalizePhone(phone);
+  if (!to) {
+    alert("No hay telefono valido para enviar WhatsApp.");
+    return false;
+  }
+  if (apiConfig.token && apiConfig.baseUrl) {
+    try {
+      await apiRequest("/api/whatsapp/send", {
+        method: "POST",
+        body: JSON.stringify({ to, text })
+      });
+      return true;
+    } catch (error) {
+      alert(`No se pudo enviar ${context} automaticamente: ${error.message}. Se abrira WhatsApp manual.`);
+    }
+  }
+  window.open(fallbackUrl || `https://wa.me/${to}?text=${encodeURIComponent(text)}`, "_blank", "noreferrer");
+  return false;
+}
+
+function buildOrderStatusMessage(order) {
   const client = getClient(order.clientId);
-  if (!client) return "#";
-  const text = state.settings.whatsappTemplate
-    .replaceAll("{cliente}", client.name)
+  const trackingUrl = buildTrackingUrl(order);
+  return state.settings.whatsappTemplate
+    .replaceAll("{cliente}", client?.name || "Cliente")
     .replaceAll("{equipo}", order.device)
     .replaceAll("{folio}", order.folio)
     .replaceAll("{estado}", order.status)
-    .replaceAll("{total}", money.format(Number(order.total || 0)));
+    .replaceAll("{total}", money.format(Number(order.total || 0)))
+    + `\nSeguimiento: ${trackingUrl}`;
+}
+
+function orderWhatsappUrl(order) {
+  const client = getClient(order.clientId);
+  if (!client) return "#";
+  const text = buildOrderStatusMessage(order);
   return `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
 }
 
-function quoteMissingPart() {
+async function quoteMissingPart() {
   const supplier = state.suppliers.find((item) => item.id === el.quoteSupplier.value);
   const partName = el.quotePartName.value.trim();
   if (!supplier) {
@@ -2533,10 +2562,11 @@ function quoteMissingPart() {
     device: el.orderDevice.value.trim(),
     partNames: [partName]
   });
-  window.open(supplierWhatsappUrl(supplier, message), "_blank", "noreferrer");
+  const sent = await sendWhatsappMessage(supplier.phone, message, supplierWhatsappUrl(supplier, message), "la cotizacion al proveedor");
+  if (sent) alert("Solicitud enviada al proveedor por WhatsApp automaticamente.");
 }
 
-function autoQuoteMissingParts(order) {
+async function autoQuoteMissingParts(order) {
   const missingParts = getMissingPartsForQuote(order);
   if (!missingParts.length) return;
 
@@ -2553,7 +2583,8 @@ function autoQuoteMissingParts(order) {
     device: order.device,
     partNames: missingParts
   });
-  window.open(supplierWhatsappUrl(supplier, message), "_blank", "noreferrer");
+  const sent = await sendWhatsappMessage(supplier.phone, message, supplierWhatsappUrl(supplier, message), "la cotizacion automatica al proveedor");
+  if (sent) alert(`Cotizacion automatica enviada al proveedor para ${order.folio}.`);
 }
 
 function getMissingPartsForQuote(order) {
@@ -2789,7 +2820,7 @@ function buildTrackingUrl(order) {
   return `${location.origin}${location.pathname}#seguimiento?${params.toString()}`;
 }
 
-function sendTrackingWhatsapp(orderId) {
+async function sendTrackingWhatsapp(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   const client = getClient(order?.clientId);
   if (!order || !client) return;
@@ -2801,10 +2832,12 @@ function sendTrackingWhatsapp(orderId) {
     `Telefono registrado: ${client.phone}`,
     `Enlace: ${url}`
   ].join("\n");
-  window.open(`https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`, "_blank", "noreferrer");
+  const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
+  const sent = await sendWhatsappMessage(client.phone, text, fallback, "el seguimiento");
+  if (sent) alert("Seguimiento enviado por WhatsApp automaticamente.");
 }
 
-function sendQuoteWhatsapp(orderId) {
+async function sendQuoteWhatsapp(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   const client = getClient(order?.clientId);
   if (!order || !client) return;
@@ -2825,10 +2858,12 @@ function sendQuoteWhatsapp(orderId) {
     `Garantia: ${warranty || "Por definir"}`,
     "Por favor responde ACEPTADO para autorizar el trabajo."
   ].join("\n");
-  window.open(`https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`, "_blank", "noreferrer");
+  const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
+  const sent = await sendWhatsappMessage(client.phone, text, fallback, "la cotizacion");
+  if (sent) alert("Cotizacion enviada por WhatsApp automaticamente.");
 }
 
-function sendReviewWhatsapp(orderId) {
+async function sendReviewWhatsapp(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   const client = getClient(order?.clientId);
   if (!order || !client) return;
@@ -2838,7 +2873,9 @@ function sendReviewWhatsapp(orderId) {
     "Si quedaste satisfecho, nos ayudas mucho dejando una resena en Google.",
     "Tu opinion ayuda a que mas clientes reparen sus equipos con confianza."
   ].join("\n");
-  window.open(`https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`, "_blank", "noreferrer");
+  const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
+  const sent = await sendWhatsappMessage(client.phone, text, fallback, "la solicitud de resena");
+  if (sent) alert("Solicitud de resena enviada por WhatsApp automaticamente.");
 }
 
 function openOrderPdf(orderId) {
@@ -3171,7 +3208,12 @@ async function apiRequest(path, options = {}) {
     }
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "Error de backend.");
+  if (!response.ok) {
+    const detail = typeof payload.error === "string"
+      ? payload.error
+      : payload.error?.message || payload.message || payload.error?.error_user_msg || "Error de backend.";
+    throw new Error(detail);
+  }
   return payload;
 }
 

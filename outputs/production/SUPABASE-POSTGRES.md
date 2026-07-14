@@ -34,6 +34,16 @@ WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_VERIFY_TOKEN=pcfix-webhook-token
 ```
 
+Con esas variables el sistema envia WhatsApp automaticamente desde el backend al:
+
+- Cambiar estatus de una orden.
+- Enviar seguimiento.
+- Enviar cotizacion al cliente.
+- Solicitar resena.
+- Cotizar piezas con proveedores.
+
+Si faltan esas variables o Meta rechaza el envio, el sistema abre WhatsApp manual como respaldo.
+
 ## 3. Cambiar Blueprint
 
 El `render.yaml` ya quedo apuntando a:

@@ -305,17 +305,27 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/whatsapp/status", requireAuth, requireRole("admin", "manager", "technician"), (_req, res) => {
+  res.json({
+    configured: Boolean(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ? "configurado" : "faltante",
+    token: process.env.WHATSAPP_TOKEN ? "configurado" : "faltante"
+  });
+});
+
 app.post("/api/whatsapp/send", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const { to, text } = req.body || {};
   if (!token || !phoneNumberId) return res.status(400).json({ error: "Configura WHATSAPP_TOKEN y WHATSAPP_PHONE_NUMBER_ID" });
+  const normalizedTo = String(to || "").replace(/\D/g, "");
+  if (!/^\d{11,15}$/.test(normalizedTo)) return res.status(400).json({ error: "Telefono WhatsApp invalido. Usa lada pais, por ejemplo 529631234567." });
   const response = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      to: String(to || "").replace(/\D/g, ""),
+      to: normalizedTo,
       type: "text",
       text: { preview_url: false, body: String(text || "") }
     })
@@ -326,7 +336,15 @@ app.post("/api/whatsapp/send", requireAuth, requireRole("admin", "manager", "tec
     [id("wam"), "out", to, text, JSON.stringify(payload), response.ok ? "sent" : "error", now()]
   );
   await audit(req.user.sub, "whatsapp_send", "whatsapp", to, response.ok ? "Enviado" : "Error");
-  res.status(response.ok ? 200 : 502).json(payload);
+  if (!response.ok) {
+    const metaMessage = payload?.error?.message || payload?.error?.error_user_msg || "Meta rechazo el envio de WhatsApp.";
+    return res.status(502).json({
+      error: metaMessage,
+      meta: payload,
+      hint: "Con token temporal, Meta solo envia a numeros de prueba. Para clientes reales necesitas numero aprobado y plantillas o ventana de 24 horas."
+    });
+  }
+  res.json(payload);
 });
 
 app.use((error, _req, res, _next) => {

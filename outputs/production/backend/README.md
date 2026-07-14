@@ -82,6 +82,16 @@ WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_VERIFY_TOKEN=pcfix-webhook-token
 ```
 
+En Render se configuran en `pcfix-backend > Environment`.
+Cuando estan presentes, el frontend envia mensajes por `POST /api/whatsapp/send` y ya no depende de abrir WhatsApp Web para estatus, seguimiento, cotizaciones y proveedores.
+
+Si no envia:
+
+- Verifica que `WHATSAPP_TOKEN` y `WHATSAPP_PHONE_NUMBER_ID` esten en Render.
+- Con token temporal, el numero destino debe estar agregado como numero de prueba en Meta.
+- Para enviar a clientes reales fuera de la ventana de 24 horas se requieren plantillas aprobadas de WhatsApp.
+- Revisa la tabla `whatsapp_messages` o los logs de Render para ver el error exacto de Meta.
+
 Webhook para Meta:
 
 ```text

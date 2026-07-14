@@ -322,16 +322,25 @@ async function handle(req, res) {
     const token = process.env.WHATSAPP_TOKEN;
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
     if (!token || !phoneNumberId) return send(res, 400, { error: "Configura WHATSAPP_TOKEN y WHATSAPP_PHONE_NUMBER_ID" });
+    const normalizedTo = String(body.to || "").replace(/\D/g, "");
+    if (!/^\d{11,15}$/.test(normalizedTo)) return send(res, 400, { error: "Telefono WhatsApp invalido. Usa lada pais, por ejemplo 529631234567." });
     const response = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ messaging_product: "whatsapp", to: String(body.to || "").replace(/\D/g, ""), type: "text", text: { body: String(body.text || "") } })
+      body: JSON.stringify({ messaging_product: "whatsapp", to: normalizedTo, type: "text", text: { body: String(body.text || "") } })
     });
     const payload = await response.json();
     db.whatsappMessages.unshift({ id: id("wam"), direction: "out", phone: body.to, text: body.text, payload, status: response.ok ? "sent" : "error", createdAt: now() });
     audit(db, user, "whatsapp_send", "whatsapp", body.to, response.ok ? "Enviado" : "Error");
     writeDb(db);
-    return send(res, response.ok ? 200 : 502, payload);
+    if (!response.ok) {
+      return send(res, 502, {
+        error: payload?.error?.message || payload?.error?.error_user_msg || "Meta rechazo el envio de WhatsApp.",
+        meta: payload,
+        hint: "Con token temporal, Meta solo envia a numeros de prueba. Para clientes reales necesitas numero aprobado y plantillas o ventana de 24 horas."
+      });
+    }
+    return send(res, 200, payload);
   }
 
   send(res, 404, { error: "Ruta no encontrada" });
