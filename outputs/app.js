@@ -440,8 +440,8 @@ function wireEvents() {
   el.newOrderInlineBtn.addEventListener("click", showNewOrderForm);
   el.orderStatusForm.addEventListener("submit", saveOrderStatus);
   el.cancelStatusEdit.addEventListener("click", hideStatusEditor);
-  el.addStatusEvidencePhoto.addEventListener("click", () => el.statusEvidencePhotoInput.click());
-  el.statusEvidencePhotoInput.addEventListener("change", addStatusEvidencePhotos);
+  el.addStatusEvidencePhoto?.addEventListener("click", () => el.statusEvidencePhotoInput?.click());
+  el.statusEvidencePhotoInput?.addEventListener("change", addStatusEvidencePhotos);
   el.quickIssue.addEventListener("change", applyQuickIssue);
   el.patternSize.addEventListener("change", () => setPattern([], Number(el.patternSize.value)));
   el.clearPattern.addEventListener("click", () => setPattern([], Number(el.patternSize.value)));
@@ -1382,6 +1382,7 @@ function setEvidencePhotos(photos) {
 }
 
 function getStatusEvidencePhotos() {
+  if (!el.statusEvidencePhotoList) return [];
   return [...el.statusEvidencePhotoList.querySelectorAll("[data-photo-src]")].map((node) => ({
     name: node.dataset.photoName || "estatus.jpg",
     src: node.dataset.photoSrc
@@ -1389,6 +1390,7 @@ function getStatusEvidencePhotos() {
 }
 
 function setStatusEvidencePhotos(photos) {
+  if (!el.statusEvidencePhotoList) return;
   const safePhotos = (photos || []).filter((photo) => photo?.src).slice(0, 6);
   el.statusEvidencePhotoList.innerHTML = safePhotos.length
     ? safePhotos.map((photo, index) => `<figure class="photo-chip" data-photo-src="${escapeAttr(photo.src)}" data-photo-name="${escapeAttr(photo.name || "estatus.jpg")}">

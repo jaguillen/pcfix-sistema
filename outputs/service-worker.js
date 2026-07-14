@@ -1,4 +1,4 @@
-const cacheName = "pcfix-app-v2";
+const cacheName = "pcfix-app-v4";
 const appShell = [
   "./",
   "./index.html",
@@ -38,16 +38,31 @@ self.addEventListener("fetch", (event) => {
 
   if (url.origin !== location.origin) return;
 
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      const fresh = fetch(request).then((response) => {
+  const networkFirst = url.pathname.endsWith("/index.html")
+    || url.pathname.endsWith("/app.js")
+    || url.pathname.endsWith("/styles.css")
+    || url.pathname.endsWith("/manifest.webmanifest");
+
+  if (networkFirst) {
+    event.respondWith(
+      fetch(request).then((response) => {
         if (response.ok) {
           const clone = response.clone();
           caches.open(cacheName).then((cache) => cache.put(request, clone));
         }
         return response;
-      }).catch(() => cached);
-      return cached || fresh;
-    })
+      }).catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  event.respondWith(
+    caches.match(request).then((cached) => cached || fetch(request).then((response) => {
+      if (response.ok) {
+        const clone = response.clone();
+        caches.open(cacheName).then((cache) => cache.put(request, clone));
+      }
+      return response;
+    }))
   );
 });
