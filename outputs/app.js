@@ -193,6 +193,7 @@ let isPullingFromBackend = false;
 let publicPortalContext = null;
 let syncQueue = loadSyncQueue();
 let isSyncingNow = false;
+let purchaseDraftItems = [];
 
 const ids = [
   "brandName",
@@ -320,6 +321,8 @@ const ids = [
   "purchasePart",
   "purchaseQty",
   "purchaseCost",
+  "addPurchaseItem",
+  "purchaseItemsList",
   "purchaseStatus",
   "purchaseNotes",
   "resetPurchaseForm",
@@ -469,6 +472,7 @@ function wireEvents() {
   el.appointmentForm.addEventListener("submit", saveAppointment);
   el.resetAppointmentForm.addEventListener("click", resetAppointmentForm);
   el.purchaseForm.addEventListener("submit", savePurchase);
+  el.addPurchaseItem.addEventListener("click", addPurchaseItemFromForm);
   el.resetPurchaseForm.addEventListener("click", resetPurchaseForm);
   el.paymentForm.addEventListener("submit", savePayment);
   el.resetPaymentForm.addEventListener("click", resetPaymentForm);
@@ -756,8 +760,8 @@ function renderDashboard() {
     ? pendingPurchases.map((purchase) => {
         const supplier = state.suppliers.find((item) => item.id === purchase.supplierId);
         return `<div class="stock-card">
-          <strong>${escapeHtml(purchase.part)}</strong>
-          <div class="record-meta">${escapeHtml(purchase.status)} | ${escapeHtml(supplier?.name || "Sin proveedor")} | ${purchase.qty} pza.</div>
+          <strong>${escapeHtml(getPurchaseSummary(purchase))}</strong>
+          <div class="record-meta">${escapeHtml(purchase.status)} | ${escapeHtml(supplier?.name || "Sin proveedor")} | ${normalizePurchaseItems(purchase).length} producto(s)</div>
         </div>`;
       }).join("")
     : emptyHtml("Sin compras pendientes", "Las compras recibidas o canceladas no aparecen aqui.");
@@ -1906,13 +1910,82 @@ function renderPurchaseSelectors() {
   if (orders.some((order) => order.id === selectedOrder)) el.purchaseOrderLink.value = selectedOrder;
 }
 
+function normalizePurchaseItems(purchase) {
+  const items = Array.isArray(purchase?.items) ? purchase.items : [];
+  const normalized = items
+    .map((item) => ({
+      id: item.id || id("pitem"),
+      part: String(item.part || "").trim(),
+      qty: Math.max(1, Number(item.qty || 1)),
+      cost: Number(item.cost || 0)
+    }))
+    .filter((item) => item.part);
+  if (normalized.length) return normalized;
+  if (purchase?.part) {
+    return [{
+      id: id("pitem"),
+      part: String(purchase.part || "").trim(),
+      qty: Math.max(1, Number(purchase.qty || 1)),
+      cost: Number(purchase.cost || 0)
+    }];
+  }
+  return [];
+}
+
+function getPurchaseSummary(purchase) {
+  const items = normalizePurchaseItems(purchase);
+  if (!items.length) return "Sin productos";
+  if (items.length === 1) return items[0].part;
+  return `${items[0].part} + ${items.length - 1} producto(s)`;
+}
+
+function getPurchaseTotal(purchase) {
+  return normalizePurchaseItems(purchase).reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.cost || 0), 0);
+}
+
+function renderPurchaseDraftItems() {
+  el.purchaseItemsList.innerHTML = purchaseDraftItems.length
+    ? purchaseDraftItems.map((item, index) => `<article class="line-item">
+        <div>
+          <strong>${escapeHtml(item.part)}</strong>
+          <span>${item.qty} pza. | ${money.format(Number(item.cost || 0))} c/u | ${money.format(Number(item.qty || 0) * Number(item.cost || 0))}</span>
+        </div>
+        <button class="btn danger" type="button" onclick="removePurchaseItem(${index})">Quitar</button>
+      </article>`).join("")
+    : emptyHtml("Sin productos agregados", "Agrega una o varias piezas para solicitar al proveedor.");
+}
+
+function addPurchaseItemFromForm() {
+  const part = el.purchasePart.value.trim();
+  if (!part) {
+    alert("Escribe la pieza o producto a solicitar.");
+    return;
+  }
+  purchaseDraftItems = [...purchaseDraftItems, {
+    id: id("pitem"),
+    part,
+    qty: Math.max(1, Number(el.purchaseQty.value || 1)),
+    cost: Number(el.purchaseCost.value || 0)
+  }];
+  el.purchasePart.value = "";
+  el.purchaseQty.value = 1;
+  el.purchaseCost.value = 0;
+  renderPurchaseDraftItems();
+}
+
+function removePurchaseItem(index) {
+  purchaseDraftItems = purchaseDraftItems.filter((_, itemIndex) => itemIndex !== index);
+  renderPurchaseDraftItems();
+}
+
 function renderPurchases() {
   const purchases = [...state.purchases]
     .filter((purchase) => {
       if (purchase.archived) return false;
       const supplier = state.suppliers.find((item) => item.id === purchase.supplierId);
       const order = state.orders.find((item) => item.id === purchase.orderId);
-      return [purchase.folio, purchase.part, purchase.status, supplier?.name, order?.folio].some(matches);
+      const itemText = normalizePurchaseItems(purchase).map((item) => item.part).join(" ");
+      return [purchase.folio, purchase.part, itemText, purchase.status, supplier?.name, order?.folio].some(matches);
     })
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   el.purchaseCount.textContent = state.purchases.length;
@@ -1924,16 +1997,20 @@ function renderPurchases() {
 function renderPurchaseCard(purchase) {
   const supplier = state.suppliers.find((item) => item.id === purchase.supplierId);
   const order = state.orders.find((item) => item.id === purchase.orderId);
-  const total = Number(purchase.qty || 0) * Number(purchase.cost || 0);
+  const items = normalizePurchaseItems(purchase);
+  const total = getPurchaseTotal(purchase);
   return `<article class="record-card">
     <div class="record-head">
       <div class="record-title">
-        <strong>${escapeHtml(purchase.folio)} | ${escapeHtml(purchase.part)}</strong>
+        <strong>${escapeHtml(purchase.folio)} | ${escapeHtml(getPurchaseSummary(purchase))}</strong>
         <span>${escapeHtml(supplier?.name || "Sin proveedor")} ${order ? "| " + escapeHtml(order.folio) : ""}</span>
       </div>
       <span class="status ${statusClass(purchase.status)}">${escapeHtml(purchase.status)}</span>
     </div>
-    <div class="record-meta">Cantidad: ${purchase.qty} | Costo estimado: ${money.format(Number(purchase.cost || 0))} | Total: ${money.format(total)}</div>
+    <div class="purchase-lines">
+      ${items.map((item) => `<div class="record-meta">${escapeHtml(item.part)} | ${item.qty} pza. | ${money.format(Number(item.cost || 0))} c/u | ${money.format(Number(item.qty || 0) * Number(item.cost || 0))}</div>`).join("")}
+    </div>
+    <div class="record-meta">Total estimado: ${money.format(total)}</div>
     <div class="record-meta">${escapeHtml(purchase.notes || "Sin notas")}</div>
     <div class="record-actions">
       <button class="btn ghost" onclick="editPurchase('${purchase.id}')">Editar</button>
@@ -1951,14 +2028,28 @@ function savePurchase(event) {
     return;
   }
   const existing = state.purchases.find((item) => item.id === el.purchaseId.value);
+  const typedPart = el.purchasePart.value.trim();
+  const items = typedPart
+    ? [...purchaseDraftItems, {
+        id: id("pitem"),
+        part: typedPart,
+        qty: Math.max(1, Number(el.purchaseQty.value || 1)),
+        cost: Number(el.purchaseCost.value || 0)
+      }]
+    : [...purchaseDraftItems];
+  if (!items.length) {
+    alert("Agrega al menos un producto a la compra.");
+    return;
+  }
   const payload = {
     id: el.purchaseId.value || id("pur"),
     folio: existing?.folio || nextPurchaseFolio(),
     supplierId: el.purchaseSupplier.value,
     orderId: el.purchaseOrderLink.value,
-    part: el.purchasePart.value.trim(),
-    qty: Math.max(1, Number(el.purchaseQty.value || 1)),
-    cost: Number(el.purchaseCost.value || 0),
+    part: items[0].part,
+    qty: items[0].qty,
+    cost: items[0].cost,
+    items,
     status: el.purchaseStatus.value,
     notes: el.purchaseNotes.value.trim(),
     createdAt: existing?.createdAt || new Date().toISOString(),
@@ -1976,11 +2067,13 @@ function editPurchase(purchaseId) {
   el.purchaseId.value = purchase.id;
   el.purchaseSupplier.value = purchase.supplierId;
   el.purchaseOrderLink.value = purchase.orderId || "";
-  el.purchasePart.value = purchase.part;
-  el.purchaseQty.value = purchase.qty || 1;
-  el.purchaseCost.value = purchase.cost || 0;
+  purchaseDraftItems = normalizePurchaseItems(purchase);
+  el.purchasePart.value = "";
+  el.purchaseQty.value = 1;
+  el.purchaseCost.value = 0;
   el.purchaseStatus.value = purchase.status || "Cotizando";
   el.purchaseNotes.value = purchase.notes || "";
+  renderPurchaseDraftItems();
   showView("purchases");
 }
 
@@ -1989,6 +2082,8 @@ function resetPurchaseForm() {
   el.purchaseId.value = "";
   el.purchaseQty.value = 1;
   el.purchaseCost.value = 0;
+  purchaseDraftItems = [];
+  renderPurchaseDraftItems();
   if (state.suppliers[0]) el.purchaseSupplier.value = state.suppliers[0].id;
   el.purchaseOrderLink.value = "";
 }
@@ -2007,11 +2102,12 @@ function sendPurchaseWhatsapp(purchaseId) {
   const supplier = state.suppliers.find((item) => item.id === purchase?.supplierId);
   if (!purchase || !supplier?.phone) return;
   const order = state.orders.find((item) => item.id === purchase.orderId);
+  const items = normalizePurchaseItems(purchase);
   const text = [
     `Hola ${supplier.contact || "encargado de tienda"}, buen dia.`,
     `Te escribo de ${state.settings.businessName}.`,
-    `Solicito cotizacion y disponibilidad de: ${purchase.part}.`,
-    `Cantidad: ${purchase.qty}`,
+    "Solicito cotizacion y disponibilidad de:",
+    ...items.map((item, index) => `${index + 1}. ${item.part} - ${item.qty} pza.`),
     order ? `Relacionado con orden: ${order.folio}` : "",
     purchase.notes ? `Notas: ${purchase.notes}` : ""
   ].filter(Boolean).join("\n");
@@ -2024,32 +2120,37 @@ function markPurchaseReceived(purchaseId) {
   state.purchases = state.purchases.map((item) =>
     item.id === purchaseId ? { ...item, status: "Recibido", updatedAt: new Date().toISOString() } : item
   );
-  const inventoryItem = findInventoryItemFromPartSearch(purchase.part);
-  if (inventoryItem && confirm(`Agregar ${purchase.qty} pieza(s) al inventario ${displayInventoryName(inventoryItem)}?`)) {
+  normalizePurchaseItems(purchase).forEach((purchaseItem) => receivePurchaseItem(purchase, purchaseItem));
+  logAction("Compra recibida", purchase.folio, purchase.id);
+  persist();
+  render();
+}
+
+function receivePurchaseItem(purchase, purchaseItem) {
+  const inventoryItem = findInventoryItemFromPartSearch(purchaseItem.part);
+  const qty = Number(purchaseItem.qty || 1);
+  if (inventoryItem && confirm(`Agregar ${qty} pieza(s) al inventario ${displayInventoryName(inventoryItem)}?`)) {
     state.inventory = state.inventory.map((item) =>
-      item.id === inventoryItem.id ? { ...item, stock: Number(item.stock || 0) + Number(purchase.qty || 1) } : item
+      item.id === inventoryItem.id ? { ...item, stock: Number(item.stock || 0) + qty } : item
     );
-    addInventoryMovement(inventoryItem.id, Number(purchase.qty || 1), "Entrada", `Compra recibida ${purchase.folio}`, purchase.id);
-  } else if (!inventoryItem && confirm("No encontre esta pieza en inventario. Crear articulo nuevo con esta compra?")) {
-    const parsed = parseInventoryName({ name: purchase.part });
+    addInventoryMovement(inventoryItem.id, qty, "Entrada", `Compra recibida ${purchase.folio}: ${purchaseItem.part}`, purchase.id);
+  } else if (!inventoryItem && confirm(`No encontre "${purchaseItem.part}" en inventario. Crear articulo nuevo con esta compra?`)) {
+    const parsed = parseInventoryName({ name: purchaseItem.part });
     const newItem = {
       id: id("inv"),
       brand: parsed.brand,
       model: parsed.model,
-      name: purchase.part,
+      name: purchaseItem.part,
       category: "Refaccion recibida",
-      stock: Number(purchase.qty || 1),
+      stock: qty,
       min: 1,
-      cost: Number(purchase.cost || 0),
-      subdealerPrice: calculateSubdealerPrice(purchase.cost),
+      cost: Number(purchaseItem.cost || 0),
+      subdealerPrice: calculateSubdealerPrice(purchaseItem.cost),
       price: 0
     };
     state.inventory = [newItem, ...state.inventory];
-    addInventoryMovement(newItem.id, Number(purchase.qty || 1), "Entrada", `Articulo creado desde ${purchase.folio}`, purchase.id);
+    addInventoryMovement(newItem.id, qty, "Entrada", `Articulo creado desde ${purchase.folio}`, purchase.id);
   }
-  logAction("Compra recibida", purchase.folio, purchase.id);
-  persist();
-  render();
 }
 
 function saveOrder(event) {
@@ -3009,7 +3110,7 @@ function exportReportsCsv() {
   });
   state.purchases.filter((purchase) => !purchase.archived).forEach((purchase) => {
     const supplier = state.suppliers.find((item) => item.id === purchase.supplierId);
-    rows.push(["Compra", purchase.createdAt, purchase.folio, supplier?.name || "", purchase.part, purchase.status, Number(purchase.qty || 0) * Number(purchase.cost || 0)]);
+    rows.push(["Compra", purchase.createdAt, purchase.folio, supplier?.name || "", normalizePurchaseItems(purchase).map((item) => `${item.part} (${item.qty})`).join(" | "), purchase.status, getPurchaseTotal(purchase)]);
   });
   state.warrantyClaims.filter((claim) => !claim.archived).forEach((claim) => {
     const order = state.orders.find((item) => item.id === claim.orderId);
@@ -3125,6 +3226,10 @@ function seedExampleData() {
     part: "Centro de carga Lenovo Ideapad",
     qty: 1,
     cost: 280,
+    items: [
+      { id: id("pitem"), part: "Centro de carga Lenovo Ideapad", qty: 1, cost: 280 },
+      { id: id("pitem"), part: "Flex de encendido Lenovo Ideapad", qty: 1, cost: 160 }
+    ],
     status: "Cotizando",
     notes: "Confirmar compatibilidad antes de pedir.",
     createdAt: new Date().toISOString(),

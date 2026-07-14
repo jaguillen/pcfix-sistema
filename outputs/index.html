@@ -473,11 +473,15 @@
               <input type="hidden" id="purchaseId">
               <label>Proveedor<select id="purchaseSupplier" required></select></label>
               <label>Orden de reparacion<select id="purchaseOrderLink"></select></label>
-              <label>Pieza solicitada<input id="purchasePart" required placeholder="Pantalla, bateria, flex..."></label>
+              <label>Pieza solicitada<input id="purchasePart" placeholder="Pantalla, bateria, flex..."></label>
               <div class="form-grid">
                 <label>Cantidad<input id="purchaseQty" type="number" min="1" step="1" value="1"></label>
                 <label>Costo estimado<input id="purchaseCost" type="number" min="0" step="0.01" value="0"></label>
               </div>
+              <div class="form-actions inline-actions">
+                <button class="btn ghost" type="button" id="addPurchaseItem">Agregar producto</button>
+              </div>
+              <div id="purchaseItemsList" class="line-items-list"></div>
               <label>Estado
                 <select id="purchaseStatus">
                   <option>Cotizando</option>

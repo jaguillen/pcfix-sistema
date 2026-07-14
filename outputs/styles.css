@@ -916,6 +916,38 @@ code {
   font-size: 13px;
 }
 
+.inline-actions {
+  justify-content: flex-start;
+  margin-top: -4px;
+}
+
+.line-items-list,
+.purchase-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.line-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfdff;
+}
+
+.line-item div {
+  display: grid;
+  gap: 3px;
+}
+
+.line-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .order-history {
   margin-top: 10px;
   border-top: 1px solid var(--line);
