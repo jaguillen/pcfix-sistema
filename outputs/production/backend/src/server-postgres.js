@@ -313,6 +313,13 @@ app.get("/api/whatsapp/status", requireAuth, requireRole("admin", "manager", "te
   });
 });
 
+app.get("/api/whatsapp/messages", requireAuth, requireRole("admin", "manager", "technician"), async (_req, res) => {
+  const result = await query(
+    "SELECT id,direction,phone,text,payload,status,created_at FROM whatsapp_messages ORDER BY created_at DESC LIMIT 20"
+  );
+  res.json(result.rows);
+});
+
 app.post("/api/whatsapp/send", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;

@@ -655,6 +655,21 @@
             </section>
             <section class="panel">
               <div class="panel-header">
+                <h2>Diagnostico WhatsApp</h2>
+                <span id="whatsappStatus" class="count-pill">Sin revisar</span>
+              </div>
+              <div class="backend-grid">
+                <label>Telefono de prueba<input id="whatsappTestPhone" inputmode="tel" placeholder="529631234567"></label>
+                <label>Mensaje de prueba<input id="whatsappTestMessage" value="Prueba de envio desde PCFIX."></label>
+              </div>
+              <div class="admin-actions">
+                <button class="btn primary" id="whatsappTestBtn" type="button">Probar WhatsApp</button>
+                <button class="btn ghost" id="whatsappRefreshBtn" type="button">Actualizar estado</button>
+              </div>
+              <div id="whatsappDiagnosticList" class="records-list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
                 <h2>Usuarios</h2>
                 <span id="userCount" class="count-pill">0</span>
               </div>
