@@ -374,12 +374,6 @@ const ids = [
   "apiPull",
   "apiPush",
   "apiDisconnect",
-  "whatsappStatus",
-  "whatsappTestPhone",
-  "whatsappTestMessage",
-  "whatsappTestBtn",
-  "whatsappRefreshBtn",
-  "whatsappDiagnosticList",
   "userCount",
   "newUserName",
   "newUserEmail",
@@ -496,8 +490,6 @@ function wireEvents() {
   el.apiPush.addEventListener("click", pushLocalData);
   el.apiDisconnect.addEventListener("click", disconnectBackend);
   el.serverMode.addEventListener("change", toggleServerMode);
-  el.whatsappTestBtn.addEventListener("click", testWhatsappSend);
-  el.whatsappRefreshBtn.addEventListener("click", loadWhatsappDiagnostics);
   el.createUserBtn.addEventListener("click", createBackendUser);
   el.refreshUsersBtn.addEventListener("click", loadBackendUsers);
   el.closePdf.addEventListener("click", () => el.pdfDialog.close());
@@ -2220,8 +2212,8 @@ async function notifyClientStatusChange(order) {
     alert("Estatus actualizado. El cliente no tiene telefono para WhatsApp.");
     return;
   }
-  const sent = await sendWhatsappMessage(client.phone, buildOrderStatusMessage(order), orderWhatsappUrl(order), "el aviso de estatus");
-  alert(sent ? "Estatus actualizado y WhatsApp enviado automaticamente." : "Estatus actualizado. WhatsApp se abrio para envio manual.");
+  const opened = await sendWhatsappMessage(client.phone, buildOrderStatusMessage(order), orderWhatsappUrl(order), "el aviso de estatus");
+  alert(opened ? "Estatus actualizado. WhatsApp se abrio con el aviso listo para enviar." : "Estatus actualizado. No se pudo abrir WhatsApp.");
 }
 
 function hideStatusEditor() {
@@ -2515,19 +2507,8 @@ async function sendWhatsappMessage(phone, text, fallbackUrl, context = "mensaje"
     alert("No hay telefono valido para enviar WhatsApp.");
     return false;
   }
-  if (apiConfig.token && apiConfig.baseUrl) {
-    try {
-      await apiRequest("/api/whatsapp/send", {
-        method: "POST",
-        body: JSON.stringify({ to, text })
-      });
-      return true;
-    } catch (error) {
-      alert(`No se pudo enviar ${context} automaticamente: ${error.message}. Se abrira WhatsApp manual.`);
-    }
-  }
   window.open(fallbackUrl || `https://wa.me/${to}?text=${encodeURIComponent(text)}`, "_blank", "noreferrer");
-  return false;
+  return true;
 }
 
 function buildOrderStatusMessage(order) {
@@ -2570,8 +2551,8 @@ async function quoteMissingPart() {
     device: el.orderDevice.value.trim(),
     partNames: [partName]
   });
-  const sent = await sendWhatsappMessage(supplier.phone, message, supplierWhatsappUrl(supplier, message), "la cotizacion al proveedor");
-  if (sent) alert("Solicitud enviada al proveedor por WhatsApp automaticamente.");
+  const opened = await sendWhatsappMessage(supplier.phone, message, supplierWhatsappUrl(supplier, message), "la cotizacion al proveedor");
+  if (opened) alert("WhatsApp se abrio con la solicitud al proveedor lista para enviar.");
 }
 
 async function autoQuoteMissingParts(order) {
@@ -2591,8 +2572,8 @@ async function autoQuoteMissingParts(order) {
     device: order.device,
     partNames: missingParts
   });
-  const sent = await sendWhatsappMessage(supplier.phone, message, supplierWhatsappUrl(supplier, message), "la cotizacion automatica al proveedor");
-  if (sent) alert(`Cotizacion automatica enviada al proveedor para ${order.folio}.`);
+  const opened = await sendWhatsappMessage(supplier.phone, message, supplierWhatsappUrl(supplier, message), "la cotizacion al proveedor");
+  if (opened) alert(`WhatsApp se abrio con la cotizacion al proveedor para ${order.folio}.`);
 }
 
 function getMissingPartsForQuote(order) {
@@ -2841,8 +2822,8 @@ async function sendTrackingWhatsapp(orderId) {
     `Enlace: ${url}`
   ].join("\n");
   const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
-  const sent = await sendWhatsappMessage(client.phone, text, fallback, "el seguimiento");
-  if (sent) alert("Seguimiento enviado por WhatsApp automaticamente.");
+  const opened = await sendWhatsappMessage(client.phone, text, fallback, "el seguimiento");
+  if (opened) alert("WhatsApp se abrio con el seguimiento listo para enviar.");
 }
 
 async function sendQuoteWhatsapp(orderId) {
@@ -2867,8 +2848,8 @@ async function sendQuoteWhatsapp(orderId) {
     "Por favor responde ACEPTADO para autorizar el trabajo."
   ].join("\n");
   const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
-  const sent = await sendWhatsappMessage(client.phone, text, fallback, "la cotizacion");
-  if (sent) alert("Cotizacion enviada por WhatsApp automaticamente.");
+  const opened = await sendWhatsappMessage(client.phone, text, fallback, "la cotizacion");
+  if (opened) alert("WhatsApp se abrio con la cotizacion lista para enviar.");
 }
 
 async function sendReviewWhatsapp(orderId) {
@@ -2882,8 +2863,8 @@ async function sendReviewWhatsapp(orderId) {
     "Tu opinion ayuda a que mas clientes reparen sus equipos con confianza."
   ].join("\n");
   const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
-  const sent = await sendWhatsappMessage(client.phone, text, fallback, "la solicitud de resena");
-  if (sent) alert("Solicitud de resena enviada por WhatsApp automaticamente.");
+  const opened = await sendWhatsappMessage(client.phone, text, fallback, "la solicitud de resena");
+  if (opened) alert("WhatsApp se abrio con la solicitud de resena lista para enviar.");
 }
 
 function openOrderPdf(orderId) {
@@ -3132,7 +3113,6 @@ function hydrateApiForm() {
   el.apiPassword.value = "";
   el.serverMode.checked = Boolean(apiConfig.serverMode);
   updateApiStatus();
-  loadWhatsappDiagnostics();
 }
 
 function updateApiStatus() {
@@ -3171,7 +3151,6 @@ async function loginBackend() {
     saveApiConfig();
     updateApiStatus();
     loadBackendUsers();
-    loadWhatsappDiagnostics();
     if (isLocalStateEmpty()) {
       const recovered = await pullBackendData({ silent: true });
       alert(recovered ? "Backend conectado y datos recuperados." : "Backend conectado. No se encontraron datos para recuperar.");
@@ -3190,7 +3169,6 @@ function disconnectBackend() {
   saveApiConfig();
   hydrateApiForm();
   updateApiStatus();
-  loadWhatsappDiagnostics();
 }
 
 function toggleServerMode() {
@@ -3226,68 +3204,6 @@ async function apiRequest(path, options = {}) {
     throw new Error(detail);
   }
   return payload;
-}
-
-function whatsappPayloadMessage(payload) {
-  let meta = payload || {};
-  if (typeof payload === "string") {
-    try {
-      meta = JSON.parse(payload || "{}");
-    } catch {
-      meta = { message: payload };
-    }
-  }
-  return meta?.error?.error_user_msg || meta?.error?.message || meta?.messages?.[0]?.id || "Sin detalle de Meta";
-}
-
-async function loadWhatsappDiagnostics() {
-  if (!apiConfig.token) {
-    el.whatsappStatus.textContent = "Sin backend";
-    el.whatsappDiagnosticList.innerHTML = emptyHtml("Conecta el backend", "Primero inicia sesion en Conexion backend.");
-    return;
-  }
-  try {
-    const status = await apiRequest("/api/whatsapp/status");
-    el.whatsappStatus.textContent = status.configured ? "Configurado" : "Incompleto";
-    const messages = await apiRequest("/api/whatsapp/messages");
-    el.whatsappDiagnosticList.innerHTML = messages.length
-      ? messages.map((message) => {
-          const detail = whatsappPayloadMessage(message.payload);
-          return `<article class="record-card compact-card">
-            <div class="record-head">
-              <div class="record-title">
-                <strong>${escapeHtml(message.status === "sent" ? "Enviado" : "Error")}</strong>
-                <span>${escapeHtml(message.phone)} | ${dateFormat.format(new Date(message.created_at))}</span>
-              </div>
-              <span class="status ${message.status === "sent" ? "" : "Cancelado"}">${escapeHtml(message.status)}</span>
-            </div>
-            <div class="record-meta">${escapeHtml(detail)}</div>
-          </article>`;
-        }).join("")
-      : emptyHtml("Sin intentos", "Envía una prueba o cambia el estatus de una orden.");
-  } catch (error) {
-    el.whatsappStatus.textContent = "Error";
-    el.whatsappDiagnosticList.innerHTML = emptyHtml("No se pudo revisar WhatsApp", error.message);
-  }
-}
-
-async function testWhatsappSend() {
-  const phone = el.whatsappTestPhone.value.trim();
-  const text = el.whatsappTestMessage.value.trim() || "Prueba de envio desde PCFIX.";
-  if (!phone) {
-    alert("Escribe un telefono de prueba con lada pais. Ejemplo: 529631234567.");
-    return;
-  }
-  try {
-    await apiRequest("/api/whatsapp/send", {
-      method: "POST",
-      body: JSON.stringify({ to: phone, text })
-    });
-    alert("Meta acepto el envio de prueba. Revisa el telefono.");
-  } catch (error) {
-    alert(`Meta no acepto el envio: ${error.message}`);
-  }
-  await loadWhatsappDiagnostics();
 }
 
 const syncCollections = [
