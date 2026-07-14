@@ -2,6 +2,7 @@
 const apiStorageKey = "pcfix-api-config-v1";
 const pendingSyncKey = "pcfix-pending-sync-v1";
 const localSnapshotKey = "pcfix-local-snapshots-v1";
+const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFormat = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const defaultWarrantyTerms = "Garantia de 90 dias sobre la reparacion realizada y las refacciones instaladas por PCFIX, contados a partir de la entrega del equipo. Para hacerla valida, el cliente debe presentar esta orden y permitir revision tecnica. La garantia cubre unicamente la falla corregida o la pieza instalada; no cubre danos por humedad, golpes, descargas electricas, mal uso, software, virus, accesorios externos, manipulacion de terceros, equipos abiertos fuera de PCFIX, sellos retirados, piezas proporcionadas por el cliente ni fallas distintas a las diagnosticadas. Cualquier trabajo adicional requiere diagnostico y autorizacion previa.";
@@ -2615,13 +2616,17 @@ async function sendWhatsappMessage(phone, text, fallbackUrl, context = "mensaje"
 function buildOrderStatusMessage(order) {
   const client = getClient(order.clientId);
   const trackingUrl = buildTrackingUrl(order);
-  return state.settings.whatsappTemplate
+  const baseMessage = state.settings.whatsappTemplate
     .replaceAll("{cliente}", client?.name || "Cliente")
     .replaceAll("{equipo}", order.device)
     .replaceAll("{folio}", order.folio)
     .replaceAll("{estado}", order.status)
     .replaceAll("{total}", money.format(Number(order.total || 0)))
     + `\nSeguimiento: ${trackingUrl}`;
+  if (order.status === "Entregado") {
+    return `${baseMessage}\n\nGracias por confiar en ${state.settings.businessName}. Si quedaste satisfecho con el servicio, nos ayudas mucho dejando una recomendacion en nuestra pagina de Facebook:\n${facebookReviewUrl}`;
+  }
+  return baseMessage;
 }
 
 function orderWhatsappUrl(order) {
@@ -2997,7 +3002,8 @@ async function sendReviewWhatsapp(orderId) {
   const text = [
     `Hola ${client.name}, gracias por confiar en ${state.settings.businessName}.`,
     `Tu servicio ${order.folio} quedo finalizado.`,
-    "Si quedaste satisfecho, nos ayudas mucho dejando una resena en Google.",
+    "Si quedaste satisfecho, nos ayudas mucho dejando una recomendacion en nuestra pagina de Facebook.",
+    facebookReviewUrl,
     "Tu opinion ayuda a que mas clientes reparen sus equipos con confianza."
   ].join("\n");
   const fallback = `https://wa.me/${normalizePhone(client.phone)}?text=${encodeURIComponent(text)}`;
