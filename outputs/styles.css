@@ -128,7 +128,7 @@ body.public-portal-mode .portal-public-brand {
   gap: 28px;
   border-right: 1px solid var(--line);
   padding: 28px 22px;
-  background: var(--sidebar);
+  background: #ffffff;
   color: var(--ink);
 }
 
@@ -143,8 +143,8 @@ body.public-portal-mode .portal-public-brand {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 76px;
-  height: 76px;
+  width: 94px;
+  height: 94px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
@@ -171,13 +171,13 @@ body.public-portal-mode .portal-public-brand {
 
 .brand strong {
   color: var(--brand);
-  font-size: 15px;
+  font-size: 16px;
   letter-spacing: 0;
 }
 
 .brand span,
 .sidebar-footer small {
-  color: var(--muted);
+  color: #667085;
 }
 
 .nav {
@@ -213,7 +213,7 @@ body.public-portal-mode .portal-public-brand {
 
 .workspace {
   min-width: 0;
-  padding: 38px 42px;
+  padding: 36px 40px;
 }
 
 .topbar {
@@ -221,7 +221,7 @@ body.public-portal-mode .portal-public-brand {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  margin-bottom: 30px;
+  margin-bottom: 24px;
 }
 
 h1,
@@ -255,6 +255,11 @@ h2 {
 
 .topbar-actions input {
   width: min(32vw, 360px);
+}
+
+#globalSearch {
+  border-color: rgba(11, 59, 99, 0.12);
+  box-shadow: none;
 }
 
 input,
@@ -393,7 +398,7 @@ label {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .priority-card {
@@ -434,7 +439,7 @@ label {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -448,7 +453,7 @@ label {
 }
 
 .metric {
-  padding: 22px 20px;
+  padding: 20px;
   box-shadow: none;
 }
 

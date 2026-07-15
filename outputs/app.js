@@ -2576,7 +2576,7 @@ function applyTheme() {
   const root = document.documentElement;
   root.style.setProperty("--brand", theme.brand);
   root.style.setProperty("--brand-strong", theme.brandStrong);
-  root.style.setProperty("--sidebar", theme.sidebar);
+  root.style.setProperty("--sidebar", "#FFFFFF");
   root.style.setProperty("--page", theme.page);
   root.style.setProperty("--panel", theme.panel);
   root.style.setProperty("--accent", theme.accent);
