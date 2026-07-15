@@ -628,6 +628,12 @@ function persist() {
   scheduleServerSync(true);
 }
 
+async function persistNow() {
+  markPendingSync();
+  const ok = await pushLocalData(false, { silent: true, notifyErrors: true });
+  if (!ok) throw new Error("El servidor no confirmo el guardado.");
+}
+
 function persistLocalOnly() {
   // La BD es la fuente de verdad. Solo mantenemos estado en memoria.
 }
@@ -2325,7 +2331,7 @@ function renderPurchaseCard(purchase) {
   </article>`;
 }
 
-function savePurchase(event) {
+async function savePurchase(event) {
   event.preventDefault();
   if (!el.purchaseSupplier.value) {
     alert("Selecciona un proveedor para la compra.");
@@ -2367,7 +2373,7 @@ function savePurchase(event) {
     applyPurchaseReceipt(payload, existing);
   }
   reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
-  persist();
+  await persistNow();
   resetPurchaseForm();
   render();
 }
@@ -2425,11 +2431,14 @@ function sendPurchaseWhatsapp(purchaseId) {
   window.open(supplierWhatsappUrl(supplier, text), "_blank", "noreferrer");
 }
 
-function markPurchaseReceived(purchaseId) {
+async function markPurchaseReceived(purchaseId) {
   const purchase = state.purchases.find((item) => item.id === purchaseId);
   if (!purchase) return;
   if (purchase.status === "Recibido") {
-    reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
+    repairReceivedPurchaseInventory(purchase);
+    reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
+    await persistNow();
+    render();
     alert("Esta compra ya fue marcada como recibida.");
     return;
   }
@@ -2440,13 +2449,52 @@ function markPurchaseReceived(purchaseId) {
   applyPurchaseReceipt(updatedPurchase, purchase);
   reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
   logAction("Compra recibida", purchase.folio, purchase.id);
-  persist();
+  await persistNow();
   render();
+}
+
+function repairReceivedPurchaseInventory(purchase) {
+  let repaired = 0;
+  const receipt = getPurchaseReceiptMap(purchase);
+  normalizePurchaseItems(purchase).forEach((purchaseItem) => {
+    const key = getPurchaseItemReceiptKey(purchaseItem);
+    const qty = Math.max(1, Number(receipt[key] || purchaseItem.qty || 1));
+    const existingItem = findInventoryItemFromPartSearch(purchaseItem.part);
+    const detailNeedle = normalizeSearchText(purchaseItem.part).slice(0, 18);
+    const alreadyMoved = state.inventoryMovements.some((movement) =>
+      movement.refId === purchase.id &&
+      movement.type === "Entrada" &&
+      normalizeSearchText(movement.detail).includes(detailNeedle)
+    );
+    if (!existingItem) {
+      const created = createInventoryItemFromPurchase(purchase, { ...purchaseItem, qty }, qty);
+      addInventoryMovement(created.id, qty, "Entrada", `Compra recibida ${purchase.folio}: ${purchaseItem.part}`, purchase.id);
+      repaired += qty;
+      return;
+    }
+    if (!alreadyMoved) {
+      state.inventory = state.inventory.map((item) =>
+        item.id === existingItem.id
+          ? {
+              ...item,
+              stock: Number(item.stock || 0) + qty,
+              cost: Number(purchaseItem.cost || item.cost || 0),
+              subdealerPrice: calculateSubdealerPrice(purchaseItem.cost || item.cost),
+              updatedAt: new Date().toISOString()
+            }
+          : item
+      );
+      addInventoryMovement(existingItem.id, qty, "Entrada", `Compra recibida ${purchase.folio}: ${purchaseItem.part}`, purchase.id);
+      repaired += qty;
+    }
+  });
+  if (repaired) logAction("Inventario reparado", `${repaired} pza. aplicada(s) desde ${purchase.folio}`, purchase.id);
+  return repaired;
 }
 
 function applyPurchaseReceipt(purchase, previousPurchase = null) {
   if (!purchase || purchase.status !== "Recibido") return 0;
-  const previousReceipt = getPurchaseReceiptMap(previousPurchase || purchase);
+  const previousReceipt = previousPurchase?.status === "Recibido" ? getPurchaseReceiptMap(previousPurchase) : {};
   const nextReceipt = { ...previousReceipt };
   let applied = 0;
   normalizePurchaseItems(purchase).forEach((purchaseItem) => {
@@ -2620,7 +2668,7 @@ function supplyPurchaseItemToOrder(purchase, purchaseItem, inventoryItem) {
   return true;
 }
 
-function saveOrder(event) {
+async function saveOrder(event) {
   event.preventDefault();
   if (!el.orderClient.value) {
     alert("Registra o selecciona un cliente antes de guardar la orden.");
@@ -2678,7 +2726,7 @@ function saveOrder(event) {
   applyOrderInventoryMovements(payload, existing);
   reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
   logAction(existing ? "Orden actualizada" : "Orden creada", payload.folio, payload.id);
-  persist();
+  await persistNow();
   autoQuoteMissingParts(payload).catch((error) => alert(`No se pudo cotizar automaticamente: ${error.message}`));
   resetOrderForm();
   hideOrderForm();
@@ -2785,7 +2833,7 @@ async function saveOrderStatus(event) {
     applyPaymentsToOrder(orderId);
   }
   logAction("Estatus actualizado", `${order.folio}: ${order.status} -> ${nextStatus}`, orderId);
-  persist();
+  await persistNow();
   await notifyClientStatusChange(updatedOrder);
   hideStatusEditor();
   render();
@@ -2871,7 +2919,7 @@ function applyOrderInventoryMovements(order, previousOrder) {
   );
 }
 
-function saveInventoryItem(event) {
+async function saveInventoryItem(event) {
   event.preventDefault();
   const existing = state.inventory.find((item) => item.id === el.itemId.value);
   const brand = el.itemBrand.value.trim();
@@ -2898,7 +2946,7 @@ function saveInventoryItem(event) {
     addInventoryMovement(payload.id, Number(payload.stock || 0), "Entrada", "Alta inicial de articulo", payload.id);
   }
   logAction(existing ? "Inventario actualizado" : "Inventario creado", displayInventoryName(payload), payload.id);
-  persist();
+  await persistNow();
   resetInventoryForm();
   render();
 }
