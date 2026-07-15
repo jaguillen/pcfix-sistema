@@ -198,6 +198,7 @@ let publicPortalContext = null;
 let syncQueue = loadSyncQueue();
 let isSyncingNow = false;
 let purchaseDraftItems = [];
+let reconciliationTimer = null;
 
 const ids = [
   "loginScreen",
@@ -420,6 +421,7 @@ document.addEventListener("DOMContentLoaded", () => {
   hydrateApiForm();
   hydratePortalFromHash();
   render();
+  startBackgroundServices();
   enforceAccessMode();
   window.addEventListener("online", () => {
     updateApiStatus();
@@ -428,6 +430,14 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("offline", updateApiStatus);
   if (apiConfig.serverMode && syncQueue.length) scheduleServerSync(true);
 });
+
+function startBackgroundServices() {
+  reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
+  clearInterval(reconciliationTimer);
+  reconciliationTimer = setInterval(() => {
+    reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
+  }, 45000);
+}
 
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
@@ -804,6 +814,9 @@ function renderDashboard() {
 function renderPriorityStrip({ activeOrders, readyOrders, lowStock, revenue, margin }) {
   const pendingPurchases = state.purchases.filter((purchase) => !purchase.archived && !["Recibido", "Cancelado"].includes(purchase.status));
   const overdueAppointments = state.appointments.filter((appointment) => !appointment.archived && isPastAppointment(appointment)).length;
+  const partsCost = state.orders
+    .filter((order) => !order.archived && order.status !== "Cancelado")
+    .reduce((sum, order) => sum + getOrderPartsCost(order), 0);
   const marginRate = revenue > 0 ? Math.round((margin / revenue) * 100) : 0;
   const priorities = [
     {
@@ -825,10 +838,10 @@ function renderPriorityStrip({ activeOrders, readyOrders, lowStock, revenue, mar
       tone: lowStock.length ? "danger" : ""
     },
     {
-      label: "Compras",
-      value: pendingPurchases.length,
-      detail: pendingPurchases.length ? "Cotizaciones abiertas" : "Sin pendientes",
-      tone: pendingPurchases.length ? "accent" : ""
+      label: "Costo piezas",
+      value: money.format(partsCost),
+      detail: "Aplicado a ordenes",
+      tone: partsCost ? "accent" : ""
     },
     {
       label: "Margen",
@@ -837,10 +850,10 @@ function renderPriorityStrip({ activeOrders, readyOrders, lowStock, revenue, mar
       tone: marginRate < 25 && revenue > 0 ? "warn" : ""
     },
     {
-      label: "Agenda",
-      value: overdueAppointments,
-      detail: overdueAppointments ? "Citas vencidas" : "Sin atrasos",
-      tone: overdueAppointments ? "danger" : ""
+      label: "Compras",
+      value: pendingPurchases.length,
+      detail: pendingPurchases.length ? "Cotizaciones abiertas" : "Sin pendientes",
+      tone: pendingPurchases.length ? "accent" : ""
     }
   ];
   el.priorityStrip.innerHTML = priorities.map((item) => `<article class="priority-card ${item.tone}">
@@ -2142,6 +2155,7 @@ function savePurchase(event) {
     updatedAt: new Date().toISOString()
   };
   state.purchases = upsert(state.purchases, payload);
+  reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
   persist();
   resetPurchaseForm();
   render();
@@ -2204,6 +2218,7 @@ function markPurchaseReceived(purchaseId) {
   const purchase = state.purchases.find((item) => item.id === purchaseId);
   if (!purchase) return;
   if (purchase.status === "Recibido") {
+    reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
     alert("Esta compra ya fue marcada como recibida.");
     return;
   }
@@ -2211,9 +2226,43 @@ function markPurchaseReceived(purchaseId) {
     item.id === purchaseId ? { ...item, status: "Recibido", updatedAt: new Date().toISOString() } : item
   );
   normalizePurchaseItems(purchase).forEach((purchaseItem) => receivePurchaseItem(purchase, purchaseItem));
+  reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
   logAction("Compra recibida", purchase.folio, purchase.id);
   persist();
   render();
+}
+
+function isPurchaseAppliedToOrder(purchase) {
+  const order = state.orders.find((item) => item.id === purchase.orderId);
+  if (!order) return false;
+  const suppliedParts = order.suppliedParts || [];
+  return normalizePurchaseItems(purchase).every((purchaseItem) =>
+    suppliedParts.some((part) => part.purchaseId === purchase.id && part.purchaseItemId === purchaseItem.id)
+  );
+}
+
+function reconcileReceivedPurchasesToOrders(options = {}) {
+  let applied = 0;
+  state.purchases
+    .filter((purchase) => !purchase.archived && purchase.status === "Recibido" && purchase.orderId && !isPurchaseAppliedToOrder(purchase))
+    .forEach((purchase) => {
+      applied += applyReceivedPurchaseToOrderSilently(purchase);
+    });
+  if (!applied) return 0;
+  logAction("Conciliacion automatica", `${applied} refaccion(es) aplicadas a ordenes`, "");
+  if (options.persistAfter) persist();
+  if (options.renderAfter) render();
+  return applied;
+}
+
+function applyReceivedPurchaseToOrderSilently(purchase) {
+  if (!purchase?.orderId) return 0;
+  let applied = 0;
+  normalizePurchaseItems(purchase).forEach((purchaseItem) => {
+    const inventoryItem = findInventoryItemFromPartSearch(purchaseItem.part) || createInventoryItemFromPurchase(purchase, purchaseItem, 0);
+    if (supplyPurchaseItemToOrder(purchase, purchaseItem, inventoryItem)) applied += 1;
+  });
+  return applied;
 }
 
 function receivePurchaseItem(purchase, purchaseItem) {
@@ -2234,20 +2283,7 @@ function receivePurchaseItem(purchase, purchaseItem) {
     receivedItem = state.inventory.find((item) => item.id === inventoryItem.id);
     addInventoryMovement(inventoryItem.id, qty, "Entrada", `Compra recibida ${purchase.folio}: ${purchaseItem.part}`, purchase.id);
   } else {
-    const parsed = parseInventoryName({ name: purchaseItem.part });
-    receivedItem = {
-      id: id("inv"),
-      brand: parsed.brand,
-      model: parsed.model,
-      name: purchaseItem.part,
-      category: "Refaccion recibida",
-      stock: qty,
-      min: 1,
-      cost: Number(purchaseItem.cost || 0),
-      subdealerPrice: calculateSubdealerPrice(purchaseItem.cost),
-      price: 0
-    };
-    state.inventory = [receivedItem, ...state.inventory];
+    receivedItem = createInventoryItemFromPurchase(purchase, purchaseItem, qty);
     addInventoryMovement(receivedItem.id, qty, "Entrada", `Articulo creado desde ${purchase.folio}`, purchase.id);
   }
   if (purchase.orderId && receivedItem) {
@@ -2255,16 +2291,34 @@ function receivePurchaseItem(purchase, purchaseItem) {
   }
 }
 
+function createInventoryItemFromPurchase(_purchase, purchaseItem, stock) {
+  const parsed = parseInventoryName({ name: purchaseItem.part });
+  const newItem = {
+    id: id("inv"),
+    brand: parsed.brand,
+    model: parsed.model,
+    name: purchaseItem.part,
+    category: "Refaccion recibida",
+    stock: Number(stock || 0),
+    min: 1,
+    cost: Number(purchaseItem.cost || 0),
+    subdealerPrice: calculateSubdealerPrice(purchaseItem.cost),
+    price: 0
+  };
+  state.inventory = [newItem, ...state.inventory];
+  return newItem;
+}
+
 function supplyPurchaseItemToOrder(purchase, purchaseItem, inventoryItem) {
   const order = state.orders.find((item) => item.id === purchase.orderId && !item.archived);
-  if (!order) return;
+  if (!order) return false;
   const qty = Math.max(1, Number(purchaseItem.qty || 1));
   const consumedCost = Number(purchaseItem.cost || inventoryItem.cost || 0);
   const suppliedParts = [...(order.suppliedParts || [])];
   const alreadySupplied = suppliedParts.some((item) =>
     item.purchaseId === purchase.id && item.purchaseItemId === purchaseItem.id
   );
-  if (alreadySupplied) return;
+  if (alreadySupplied) return false;
   state.inventory = state.inventory.map((item) =>
     item.id === inventoryItem.id ? { ...item, stock: Math.max(0, Number(item.stock || 0) - qty) } : item
   );
@@ -2288,6 +2342,7 @@ function supplyPurchaseItemToOrder(purchase, purchaseItem, inventoryItem) {
       : item
   );
   logAction("Refaccion surtida", `${purchaseItem.part} -> ${order.folio}`, order.id);
+  return true;
 }
 
 function saveOrder(event) {
@@ -2333,6 +2388,7 @@ function saveOrder(event) {
   };
   state.orders = upsert(state.orders, payload);
   applyOrderInventoryMovements(payload, existing);
+  reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
   logAction(existing ? "Orden actualizada" : "Orden creada", payload.folio, payload.id);
   persist();
   autoQuoteMissingParts(payload).catch((error) => alert(`No se pudo cotizar automaticamente: ${error.message}`));
@@ -3789,6 +3845,7 @@ async function pullBackendData(options = {}) {
     }
     isPullingFromBackend = true;
     state = nextState;
+    reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
     persist();
     isPullingFromBackend = false;
     applyTheme();
