@@ -96,20 +96,6 @@ async function initDb() {
       created_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS records (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      data JSONB NOT NULL,
-      archived BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_records_type ON records(type);
-    CREATE INDEX IF NOT EXISTS idx_records_archived ON records(archived);
-    CREATE INDEX IF NOT EXISTS idx_records_order_folio_lookup ON records (lower(data->>'folio')) WHERE type = 'order' AND archived = FALSE;
-    CREATE INDEX IF NOT EXISTS idx_records_order_tracking_lookup ON records ((data->>'trackingCode')) WHERE type = 'order' AND archived = FALSE;
-
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
       user_id TEXT,
@@ -146,22 +132,8 @@ async function initDb() {
 }
 
 async function runStabilityMigration() {
-  await repairDuplicateBusinessKeys();
-  await query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_order_folio
-      ON records (lower(data->>'folio'))
-      WHERE type = 'order' AND archived = FALSE AND COALESCE(data->>'folio', '') <> '';
-
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_order_tracking
-      ON records ((data->>'trackingCode'))
-      WHERE type = 'order' AND archived = FALSE AND COALESCE(data->>'trackingCode', '') <> '';
-
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_purchase_folio
-      ON records (lower(data->>'folio'))
-      WHERE type = 'purchase' AND archived = FALSE AND COALESCE(data->>'folio', '') <> '';
-  `);
   await createProfessionalSchema();
-  await syncAllNormalizedTables();
+  await repairProfessionalDuplicateBusinessKeys();
   await createProfessionalConstraints();
 }
 
@@ -386,91 +358,44 @@ async function createProfessionalSchema() {
   `);
 }
 
-async function repairDuplicateBusinessKeys() {
-  const repairedOrders = await repairDuplicatesForType("order", [
-    {
-      name: "folio",
-      get: (data) => data.folio,
-      set: (data, value) => ({ ...data, folio: value })
-    },
-    {
-      name: "trackingCode",
-      get: (data) => data.trackingCode,
-      set: (data, value) => ({ ...data, trackingCode: value })
-    }
-  ]);
-  const repairedPurchases = await repairDuplicatesForType("purchase", [
-    {
-      name: "folio",
-      get: (data) => data.folio,
-      set: (data, value) => ({ ...data, folio: value })
-    }
-  ]);
-  if (repairedOrders + repairedPurchases > 0) {
-    await audit(null, "stability_migration", "records", "", `${repairedOrders + repairedPurchases} duplicado(s) reparados`);
+async function repairProfessionalDuplicateBusinessKeys() {
+  const repairedOrdersFolio = await repairProfessionalDuplicates("service_orders", "folio");
+  const repairedOrdersTracking = await repairProfessionalDuplicates("service_orders", "tracking_code");
+  const repairedPurchasesFolio = await repairProfessionalDuplicates("purchases", "folio");
+  const repaired = repairedOrdersFolio + repairedOrdersTracking + repairedPurchasesFolio;
+  if (repaired > 0) {
+    await audit(null, "professional_stability_migration", "professional_tables", "", `${repaired} duplicado(s) reparados`);
   }
 }
 
-async function repairDuplicatesForType(type, fields) {
+async function repairProfessionalDuplicates(table, column) {
   const result = await query(
-    "SELECT * FROM records WHERE type = $1 AND archived = FALSE ORDER BY created_at ASC, updated_at ASC",
-    [type]
+    `SELECT id, ${column} AS value, created_at, updated_at
+     FROM ${table}
+     WHERE archived = FALSE AND COALESCE(${column}, '') <> ''
+     ORDER BY created_at ASC, updated_at ASC`
   );
-  const rows = result.rows.map(normalizeRecord);
+  const seen = new Set();
   let changed = 0;
-  for (const field of fields) {
-    const seen = new Set();
-    for (const row of rows) {
-      const currentValue = String(field.get(row.data) || "").trim();
-      if (!currentValue) continue;
-      let candidate = currentValue;
-      let key = normalizeKey(candidate);
-      if (!seen.has(key)) {
-        seen.add(key);
-        continue;
-      }
-      let consecutive = 2;
-      do {
-        candidate = appendConsecutive(currentValue, consecutive);
-        key = normalizeKey(candidate);
-        consecutive += 1;
-      } while (seen.has(key));
-      row.data = field.set(row.data, candidate);
+  for (const row of result.rows) {
+    const original = String(row.value || "").trim();
+    const key = normalizeKey(original);
+    if (!key) continue;
+    if (!seen.has(key)) {
       seen.add(key);
-      changed += 1;
-      await query(
-        "UPDATE records SET data = $1, updated_at = $2 WHERE id = $3 AND type = $4",
-        [JSON.stringify(row.data), now(), row.id, type]
-      );
+      continue;
     }
+    let consecutive = 2;
+    let candidate = appendConsecutive(original, consecutive);
+    while (seen.has(normalizeKey(candidate))) {
+      consecutive += 1;
+      candidate = appendConsecutive(original, consecutive);
+    }
+    await query(`UPDATE ${table} SET ${column} = $1, updated_at = $2 WHERE id = $3`, [candidate, now(), row.id]);
+    seen.add(normalizeKey(candidate));
+    changed += 1;
   }
   return changed;
-}
-
-async function syncAllNormalizedTables() {
-  await clearNormalizedProjection();
-  const result = await query("SELECT * FROM records ORDER BY created_at ASC, updated_at ASC");
-  for (const row of result.rows.map(normalizeRecord)) {
-    await syncNormalizedRecord(row.type, row.data, row.archived, row.created_at, row.updated_at);
-  }
-}
-
-async function clearNormalizedProjection() {
-  await query(`
-    DELETE FROM order_parts;
-    DELETE FROM purchase_items;
-    DELETE FROM payments;
-    DELETE FROM appointments;
-    DELETE FROM warranty_claims;
-    DELETE FROM inventory_movements;
-    DELETE FROM audit_entries;
-    DELETE FROM purchases;
-    DELETE FROM service_orders;
-    DELETE FROM inventory_items;
-    DELETE FROM suppliers;
-    DELETE FROM clients;
-    DELETE FROM app_settings;
-  `);
 }
 
 async function createProfessionalConstraints() {
@@ -702,28 +627,59 @@ async function resolveRecordId(type, requestedId) {
   let candidate = baseId;
   let consecutive = 2;
   while (true) {
-    const existing = await query("SELECT id,type FROM records WHERE id = $1 LIMIT 1", [candidate]);
-    if (!existing.rows.length || existing.rows[0].type === type) return candidate;
+    const existing = await findProfessionalRecordById(candidate);
+    if (!existing || existing.type === type) return candidate;
     candidate = appendConsecutive(baseId, consecutive);
     consecutive += 1;
   }
 }
 
 async function resolveUniqueJsonField(type, recordId, field, value) {
-  const jsonField = safeJsonField(field);
+  safeJsonField(field);
   const baseValue = String(value || "").trim();
   if (!baseValue) return baseValue;
   let candidate = baseValue;
   let consecutive = 2;
   while (true) {
-    const existing = await query(
-      `SELECT id FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'${jsonField}') = lower($2) AND id <> $3 LIMIT 1`,
-      [type, candidate, recordId]
-    );
+    const existing = await findProfessionalRecordByBusinessKey(type, field, candidate, recordId);
     if (!existing.rows.length) return candidate;
     candidate = appendConsecutive(baseValue, consecutive);
     consecutive += 1;
   }
+}
+
+async function findProfessionalRecordById(recordId) {
+  const tableMap = {
+    settings: "app_settings",
+    client: "clients",
+    order: "service_orders",
+    inventory: "inventory_items",
+    supplier: "suppliers",
+    appointment: "appointments",
+    purchase: "purchases",
+    payment: "payments",
+    inventoryMovement: "inventory_movements",
+    warrantyClaim: "warranty_claims",
+    auditEntry: "audit_entries"
+  };
+  for (const [type, table] of Object.entries(tableMap)) {
+    const result = await query(`SELECT id FROM ${table} WHERE id = $1 LIMIT 1`, [recordId]);
+    if (result.rows.length) return { type, id: recordId };
+  }
+  return null;
+}
+
+async function findProfessionalRecordByBusinessKey(type, field, value, recordId) {
+  if (type === "order" && field === "folio") {
+    return query("SELECT id FROM service_orders WHERE archived = FALSE AND lower(folio) = lower($1) AND id <> $2 LIMIT 1", [value, recordId]);
+  }
+  if (type === "order" && field === "trackingCode") {
+    return query("SELECT id FROM service_orders WHERE archived = FALSE AND tracking_code = $1 AND id <> $2 LIMIT 1", [value, recordId]);
+  }
+  if (type === "purchase" && field === "folio") {
+    return query("SELECT id FROM purchases WHERE archived = FALSE AND lower(folio) = lower($1) AND id <> $2 LIMIT 1", [value, recordId]);
+  }
+  return { rows: [] };
 }
 
 function signToken(user) {
@@ -801,43 +757,40 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/public/orders/:folio", async (req, res) => {
   const folio = String(req.params.folio || "").toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
-  const result = trackingCode
+  const normalizedResult = trackingCode
     ? await query(
-        "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 AND data->>'trackingCode' = $3 ORDER BY updated_at DESC LIMIT 1",
-        ["order", folio, trackingCode]
+        "SELECT o.*, c.name AS client_name FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
+        [folio, trackingCode]
       )
     : await query(
-        "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 ORDER BY updated_at DESC LIMIT 1",
-        ["order", folio]
+        "SELECT o.*, c.name AS client_name FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 ORDER BY o.updated_at DESC LIMIT 1",
+        [folio]
       );
-  const row = result.rows[0];
-  if (!row) return res.status(404).json({ error: "Orden no encontrada" });
-  const order = normalizeRecord(row).data;
-  const clientResult = await query(
-    "SELECT * FROM records WHERE type = $1 AND id = $2 AND archived = FALSE LIMIT 1",
-    ["client", order.clientId]
-  );
-  const client = clientResult.rows[0] ? normalizeRecord(clientResult.rows[0]).data : null;
-  res.json({
-    order: {
-      folio: order.folio,
-      status: order.status,
-      device: order.device,
-      issue: order.issue,
-      notes: order.notes,
-      physicalState: order.physicalState,
-      warrantyDays: order.warrantyDays,
-      warrantyTerms: order.warrantyTerms,
-      total: order.total,
-      deposit: order.deposit,
-      trackingCode: order.trackingCode,
-      createdAt: order.createdAt,
-      updatedAt: order.updatedAt,
-      statusHistory: order.statusHistory || [],
-      statusEvidencePhotos: order.statusEvidencePhotos || []
-    },
-    client: { name: client?.name || "Cliente" }
-  });
+  if (normalizedResult.rows[0]) {
+    const row = normalizedResult.rows[0];
+    const order = row.raw_data || {};
+    return res.json({
+      order: {
+        folio: row.folio,
+        status: row.status,
+        device: row.device,
+        issue: row.issue,
+        notes: row.notes,
+        physicalState: row.physical_state,
+        warrantyDays: row.warranty_days,
+        warrantyTerms: row.warranty_terms,
+        total: row.total,
+        deposit: row.deposit,
+        trackingCode: row.tracking_code,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        statusHistory: order.statusHistory || row.status_history || [],
+        statusEvidencePhotos: order.statusEvidencePhotos || row.status_evidence_photos || []
+      },
+      client: { name: row.client_name || "Cliente" }
+    });
+  }
+  res.status(404).json({ error: "Orden no encontrada" });
 });
 
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.user }));
@@ -846,11 +799,7 @@ app.get("/api/records/:type", requireAuth, async (req, res) => {
   const { type } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
   const includeArchived = req.query.archived === "1";
-  const result = await query(
-    `SELECT * FROM records WHERE type = $1 ${includeArchived ? "" : "AND archived = FALSE"} ORDER BY updated_at DESC`,
-    [type]
-  );
-  res.json(result.rows.map(normalizeRecord));
+  res.json(await getNormalizedRecordsForType(type, includeArchived));
 });
 
 app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
@@ -860,40 +809,24 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
   const prepared = await prepareRecordForSave(type, req.body?.id || record.id, record);
   const { recordId, data } = prepared;
   const timestamp = now();
-  const existing = await query("SELECT id FROM records WHERE id = $1", [recordId]);
+  const existing = await findProfessionalRecordById(recordId);
   try {
-    await query(
-      `INSERT INTO records (id,type,data,archived,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
-      [recordId, type, JSON.stringify(data), Boolean(record.archived), timestamp, timestamp]
-    );
     await syncNormalizedRecord(type, data, Boolean(record.archived), timestamp, timestamp);
   } catch (error) {
     if (error?.code !== "23505") throw error;
     const retry = await prepareRecordForSave(type, appendConsecutive(recordId, 2), data);
-    await query(
-      `INSERT INTO records (id,type,data,archived,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
-      [retry.recordId, type, JSON.stringify(retry.data), Boolean(record.archived), timestamp, timestamp]
-    );
     await syncNormalizedRecord(type, retry.data, Boolean(record.archived), timestamp, timestamp);
     await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${recordId}`);
     return res.status(201).json({ id: retry.recordId, data: retry.data, deduped: true });
   }
-  await audit(req.user.sub, existing.rows.length ? "update" : "create", type, recordId, req.body?.detail || "");
-  res.status(existing.rows.length ? 200 : 201).json({ id: recordId, data, deduped: recordId !== (req.body?.id || record.id) });
+  await audit(req.user.sub, existing ? "update" : "create", type, recordId, req.body?.detail || "");
+  res.status(existing ? 200 : 201).json({ id: recordId, data, deduped: recordId !== (req.body?.id || record.id) });
 });
 
 app.post("/api/records/:type/:id/archive", requireAuth, requireRole("admin", "manager"), async (req, res) => {
   const { type, id: recordId } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
-  await query("UPDATE records SET archived = TRUE, updated_at = $1 WHERE id = $2 AND type = $3", [now(), recordId, type]);
-  const archived = await query("SELECT * FROM records WHERE id = $1 AND type = $2 LIMIT 1", [recordId, type]);
-  if (archived.rows[0]) {
-    await syncNormalizedRecord(type, normalizeRecord(archived.rows[0]).data, true, archived.rows[0].created_at, now());
-  }
+  await archiveNormalizedRecord(type, recordId);
   await audit(req.user.sub, "archive", type, recordId, req.body?.detail || "");
   res.json({ ok: true });
 });
@@ -916,17 +849,32 @@ app.get("/api/admin/integrity", requireAuth, requireRole("admin", "manager"), as
 });
 
 app.post("/api/admin/stability/repair", requireAuth, requireRole("admin"), async (req, res) => {
-  await repairDuplicateBusinessKeys();
-  await audit(req.user.sub, "manual_stability_repair", "records", "", "Reparacion manual de duplicados");
+  await repairProfessionalDuplicateBusinessKeys();
+  await audit(req.user.sub, "manual_stability_repair", "professional_tables", "", "Reparacion manual de duplicados");
   res.json(await getStabilityReport());
 });
 
 async function getStabilityReport() {
   const [ordersFolio, ordersTracking, purchasesFolio, totals, normalizedTotals] = await Promise.all([
-    findDuplicateJsonValues("order", "folio"),
-    findDuplicateJsonValues("order", "trackingCode"),
-    findDuplicateJsonValues("purchase", "folio"),
-    query("SELECT type, COUNT(*)::int AS total FROM records WHERE archived = FALSE GROUP BY type ORDER BY type"),
+    findDuplicateProfessionalValues("service_orders", "folio"),
+    findDuplicateProfessionalValues("service_orders", "tracking_code"),
+    findDuplicateProfessionalValues("purchases", "folio"),
+    query(`
+      SELECT *
+      FROM (VALUES
+        ('client', (SELECT COUNT(*)::int FROM clients WHERE archived = FALSE)),
+        ('order', (SELECT COUNT(*)::int FROM service_orders WHERE archived = FALSE)),
+        ('inventory', (SELECT COUNT(*)::int FROM inventory_items WHERE archived = FALSE)),
+        ('supplier', (SELECT COUNT(*)::int FROM suppliers WHERE archived = FALSE)),
+        ('appointment', (SELECT COUNT(*)::int FROM appointments WHERE archived = FALSE)),
+        ('purchase', (SELECT COUNT(*)::int FROM purchases WHERE archived = FALSE)),
+        ('payment', (SELECT COUNT(*)::int FROM payments WHERE archived = FALSE)),
+        ('inventoryMovement', (SELECT COUNT(*)::int FROM inventory_movements)),
+        ('warrantyClaim', (SELECT COUNT(*)::int FROM warranty_claims WHERE archived = FALSE)),
+        ('auditEntry', (SELECT COUNT(*)::int FROM audit_entries))
+      ) AS totals(type,total)
+      ORDER BY type
+    `),
     getNormalizedTotals()
   ]);
   return {
@@ -935,8 +883,8 @@ async function getStabilityReport() {
       "orden.folio unico en ordenes activas",
       "orden.trackingCode unico en ordenes activas",
       "compra.folio unico en compras activas",
-      "id primario unico global en records",
-      "tablas profesionales sincronizadas por modulo"
+      "id primario unico por tabla profesional",
+      "lectura y escritura directa en tablas profesionales"
     ],
     duplicates: {
       orderFolio: ordersFolio,
@@ -1158,16 +1106,80 @@ async function getIntegrityReport() {
   };
 }
 
-async function findDuplicateJsonValues(type, field) {
-  const jsonField = safeJsonField(field);
+async function getNormalizedRecordsForType(type, includeArchived = false) {
+  const archivedClause = includeArchived ? "" : "WHERE archived = FALSE";
+  const simpleMap = {
+    client: ["clients", "updated_at"],
+    supplier: ["suppliers", "updated_at"],
+    inventory: ["inventory_items", "updated_at"],
+    order: ["service_orders", "updated_at"],
+    purchase: ["purchases", "updated_at"],
+    payment: ["payments", "updated_at"],
+    appointment: ["appointments", "updated_at"],
+    warrantyClaim: ["warranty_claims", "updated_at"]
+  };
+  if (type === "settings") {
+    const result = await query("SELECT id, raw_data AS data, FALSE AS archived, updated_at AS created_at, updated_at FROM app_settings ORDER BY updated_at DESC LIMIT 1");
+    return result.rows.map((row) => ({
+      id: row.id,
+      type,
+      data: row.data,
+      archived: false,
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }));
+  }
+  if (type === "inventoryMovement") {
+    const result = await query("SELECT id, raw_data AS data, FALSE AS archived, created_at, created_at AS updated_at FROM inventory_movements ORDER BY created_at DESC");
+    return result.rows.map((row) => ({ id: row.id, type, data: row.data, archived: false, created_at: row.created_at, updated_at: row.updated_at }));
+  }
+  if (type === "auditEntry") {
+    const result = await query("SELECT id, raw_data AS data, FALSE AS archived, created_at, created_at AS updated_at FROM audit_entries ORDER BY created_at DESC");
+    return result.rows.map((row) => ({ id: row.id, type, data: row.data, archived: false, created_at: row.created_at, updated_at: row.updated_at }));
+  }
+  const map = simpleMap[type];
+  if (!map) return [];
+  const [table, orderColumn] = map;
+  const result = await query(`SELECT id, raw_data AS data, archived, created_at, updated_at FROM ${table} ${archivedClause} ORDER BY ${orderColumn} DESC`);
+  return result.rows.map((row) => ({
+    id: row.id,
+    type,
+    data: row.data,
+    archived: Boolean(row.archived),
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  }));
+}
+
+async function archiveNormalizedRecord(type, recordId) {
+  const tableMap = {
+    client: "clients",
+    supplier: "suppliers",
+    inventory: "inventory_items",
+    order: "service_orders",
+    purchase: "purchases",
+    payment: "payments",
+    appointment: "appointments",
+    warrantyClaim: "warranty_claims"
+  };
+  const table = tableMap[type];
+  if (!table) return;
+  await query(`UPDATE ${table} SET archived = TRUE, updated_at = $1 WHERE id = $2`, [now(), recordId]);
+}
+
+async function findDuplicateProfessionalValues(table, column) {
+  const allowed = {
+    service_orders: new Set(["folio", "tracking_code"]),
+    purchases: new Set(["folio"])
+  };
+  if (!allowed[table]?.has(column)) throw new Error("Campo profesional no permitido");
   const result = await query(
-    `SELECT data->>'${jsonField}' AS value, COUNT(*)::int AS total
-     FROM records
-     WHERE type = $1 AND archived = FALSE AND COALESCE(data->>'${jsonField}', '') <> ''
-     GROUP BY data->>'${jsonField}'
+    `SELECT ${column} AS value, COUNT(*)::int AS total
+     FROM ${table}
+     WHERE archived = FALSE AND COALESCE(${column}, '') <> ''
+     GROUP BY ${column}
      HAVING COUNT(*) > 1
-     ORDER BY total DESC, value ASC`,
-    [type]
+     ORDER BY total DESC, value ASC`
   );
   return result.rows;
 }

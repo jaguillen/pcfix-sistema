@@ -4,8 +4,8 @@ Esta version agrega tablas por modulo sin romper la compatibilidad con la app ac
 
 ## Estrategia
 
-La tabla `records` se conserva como capa de compatibilidad y respaldo JSON.
-Cada vez que se guarda un registro, el backend tambien lo proyecta a tablas profesionales.
+La app conserva las mismas rutas API para no romper el frontend, pero el backend ya guarda y lee directo desde tablas profesionales.
+La tabla `records` queda solo como legacy temporal para migracion o respaldo si existe.
 
 Esto permite:
 
@@ -13,7 +13,8 @@ Esto permite:
 - restricciones por entidad;
 - indices por cliente, orden, inventario y compras;
 - integridad entre partidas de compras, ordenes y refacciones;
-- migracion gradual sin perder datos existentes.
+- migracion gradual sin perder datos existentes;
+- operacion directa en tablas por modulo.
 
 ## Tablas creadas
 
@@ -103,5 +104,9 @@ La respuesta incluye:
 
 ## Importante
 
-La app sigue leyendo y escribiendo con `/api/records/:type`.
-La diferencia es que ahora cada escritura tambien queda organizada en su tabla especifica.
+La app sigue llamando `/api/records/:type` por compatibilidad, pero esa ruta ya lee y escribe en tablas profesionales.
+Despues de proyectar datos, puedes respaldar y purgar `records` con:
+
+```text
+supabase-respaldar-y-purgar-records.sql
+```
