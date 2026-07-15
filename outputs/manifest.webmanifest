@@ -11,9 +11,9 @@
   "categories": ["business", "productivity", "utilities"],
   "icons": [
     {
-      "src": "assets/app-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "assets/logo-pcfix.png",
+      "sizes": "945x945",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ],

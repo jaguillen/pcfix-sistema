@@ -9,8 +9,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="PCFix">
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="icon" href="assets/app-icon.svg" type="image/svg+xml">
-    <link rel="apple-touch-icon" href="assets/app-icon.svg">
+    <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
+    <link rel="apple-touch-icon" href="assets/logo-pcfix.png">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -22,8 +22,8 @@
             <span>PF</span>
           </div>
           <div>
-            <strong id="brandName">PCFIX</strong>
-            <span>Panel tecnico</span>
+            <strong id="brandName">PCFIX COMITAN</strong>
+            <span>Sistema administrativo</span>
           </div>
         </div>
         <nav class="nav" aria-label="Secciones">
@@ -41,7 +41,7 @@
         </nav>
         <div class="sidebar-footer">
           <span id="today"></span>
-          <small>Sistema local demo</small>
+          <small>Operacion en nube</small>
         </div>
       </aside>
 
@@ -58,6 +58,8 @@
         </header>
 
         <section class="view active" id="dashboardView">
+          <section class="priority-strip" id="priorityStrip" aria-label="Prioridades operativas"></section>
+
           <div class="metrics-grid">
             <article class="metric">
               <span>Ordenes activas</span>
@@ -580,6 +582,13 @@
         </section>
 
         <section class="view" id="clientPortalView">
+          <div class="portal-public-brand">
+            <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
+            <div>
+              <strong>Seguimiento PCFix</strong>
+              <span>Servicio tecnico con trazabilidad</span>
+            </div>
+          </div>
           <div class="portal-layout">
             <form class="panel form-panel" id="clientPortalForm">
               <div class="panel-header">
@@ -645,7 +654,7 @@
                 <span id="apiStatus" class="count-pill">Local</span>
               </div>
               <div class="backend-grid">
-                <label>URL del servidor<input id="apiBaseUrl" value="http://localhost:8080"></label>
+                <label>URL del servidor<input id="apiBaseUrl" value="https://pcfix-backend.onrender.com"></label>
                 <label>Email<input id="apiEmail" type="email" value="admin@pcfix.local"></label>
                 <label>Password<input id="apiPassword" type="password" value="Cambiar123!"></label>
               </div>

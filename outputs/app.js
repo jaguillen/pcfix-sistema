@@ -3,6 +3,9 @@ const apiStorageKey = "pcfix-api-config-v1";
 const pendingSyncKey = "pcfix-pending-sync-v1";
 const localSnapshotKey = "pcfix-local-snapshots-v1";
 const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
+const productionApiBaseUrl = "https://pcfix-backend.onrender.com";
+const defaultApiEmail = "admin@pcfix.local";
+const defaultApiPassword = "Cambiar123!";
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFormat = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const defaultWarrantyTerms = "Garantia de 90 dias sobre la reparacion realizada y las refacciones instaladas por PCFIX, contados a partir de la entrega del equipo. Para hacerla valida, el cliente debe presentar esta orden y permitir revision tecnica. La garantia cubre unicamente la falla corregida o la pieza instalada; no cubre danos por humedad, golpes, descargas electricas, mal uso, software, virus, accesorios externos, manipulacion de terceros, equipos abiertos fuera de PCFIX, sellos retirados, piezas proporcionadas por el cliente ni fallas distintas a las diagnosticadas. Cualquier trabajo adicional requiere diagnostico y autorizacion previa.";
@@ -160,7 +163,7 @@ const commercialDeviceCatalog = {
 
 const defaultState = {
   settings: {
-    businessName: "PCFIX",
+    businessName: "PCFIX COMITAN",
     businessPhone: "9631234567",
     businessAddress: "Comitan de Dominguez, Chiapas",
     whatsappTemplate:
@@ -168,7 +171,7 @@ const defaultState = {
     theme: {
       brand: "#0B3B63",
       brandStrong: "#082C4A",
-      sidebar: "#0B3B63",
+      sidebar: "#FFFFFF",
       page: "#F5F7FA",
       panel: "#ffffff",
       accent: "#20C7D8"
@@ -207,6 +210,7 @@ const ids = [
   "metricRevenue",
   "metricLowStock",
   "metricMargin",
+  "priorityStrip",
   "decisionSummary",
   "revenueChart",
   "statusChart",
@@ -409,10 +413,10 @@ document.addEventListener("DOMContentLoaded", () => {
   hydrateApiForm();
   hydratePortalFromHash();
   render();
-  autoRecoverFromBackendIfEmpty();
+  cloudStartupSync();
   window.addEventListener("online", () => {
     updateApiStatus();
-    flushSyncQueue();
+    cloudStartupSync();
   });
   window.addEventListener("offline", updateApiStatus);
   if (apiConfig.serverMode && syncQueue.length) scheduleServerSync(true);
@@ -518,7 +522,9 @@ function loadState() {
         }
       }
     };
-    if (isLegacyTheme(loaded.settings.theme)) loaded.settings.theme = structuredClone(defaultState.settings.theme);
+    if (isLegacyTheme(loaded.settings.theme) || isPreviousPcfixTheme(loaded.settings.theme)) {
+      loaded.settings.theme = structuredClone(defaultState.settings.theme);
+    }
     return loaded;
   } catch {
     return structuredClone(defaultState);
@@ -528,14 +534,15 @@ function loadState() {
 function loadApiConfig() {
   try {
     return {
-      baseUrl: "http://localhost:8080",
-      email: "admin@pcfix.local",
+      baseUrl: productionApiBaseUrl,
+      email: defaultApiEmail,
       token: "",
       user: null,
+      serverMode: true,
       ...JSON.parse(localStorage.getItem(apiStorageKey) || "{}")
     };
   } catch {
-    return { baseUrl: "http://localhost:8080", email: "admin@pcfix.local", token: "", user: null };
+    return { baseUrl: productionApiBaseUrl, email: defaultApiEmail, token: "", user: null, serverMode: true };
   }
 }
 
@@ -604,6 +611,10 @@ function isLocalStateEmpty() {
 
 function isLegacyTheme(theme) {
   return theme?.brand === "#0f766e" && theme?.sidebar === "#17202a";
+}
+
+function isPreviousPcfixTheme(theme) {
+  return theme?.brand === "#0B3B63" && theme?.sidebar === "#0B3B63" && theme?.accent === "#20C7D8";
 }
 
 function persist() {
@@ -714,6 +725,7 @@ function renderDashboard() {
   el.metricRevenue.textContent = money.format(revenue);
   el.metricLowStock.textContent = lowStock.length;
   el.metricMargin.textContent = money.format(margin);
+  renderPriorityStrip({ activeOrders, readyOrders, lowStock, revenue, margin });
 
   const recent = [...state.orders]
     .filter((order) => !order.archived)
@@ -766,6 +778,55 @@ function renderDashboard() {
         </div>`;
       }).join("")
     : emptyHtml("Sin compras pendientes", "Las compras recibidas o canceladas no aparecen aqui.");
+}
+
+function renderPriorityStrip({ activeOrders, readyOrders, lowStock, revenue, margin }) {
+  const pendingPurchases = state.purchases.filter((purchase) => !purchase.archived && !["Recibido", "Cancelado"].includes(purchase.status));
+  const overdueAppointments = state.appointments.filter((appointment) => !appointment.archived && isPastAppointment(appointment)).length;
+  const marginRate = revenue > 0 ? Math.round((margin / revenue) * 100) : 0;
+  const priorities = [
+    {
+      label: "Entregas",
+      value: readyOrders.length,
+      detail: readyOrders.length ? "Listas para cerrar" : "Sin equipos listos",
+      tone: readyOrders.length ? "accent" : ""
+    },
+    {
+      label: "Seguimiento",
+      value: activeOrders.length,
+      detail: activeOrders.length ? "Ordenes activas" : "Operacion limpia",
+      tone: activeOrders.length > 8 ? "warn" : ""
+    },
+    {
+      label: "Inventario",
+      value: lowStock.length,
+      detail: lowStock.length ? "Stock bajo" : "Niveles estables",
+      tone: lowStock.length ? "danger" : ""
+    },
+    {
+      label: "Compras",
+      value: pendingPurchases.length,
+      detail: pendingPurchases.length ? "Cotizaciones abiertas" : "Sin pendientes",
+      tone: pendingPurchases.length ? "accent" : ""
+    },
+    {
+      label: "Margen",
+      value: `${marginRate}%`,
+      detail: money.format(margin),
+      tone: marginRate < 25 && revenue > 0 ? "warn" : ""
+    },
+    {
+      label: "Agenda",
+      value: overdueAppointments,
+      detail: overdueAppointments ? "Citas vencidas" : "Sin atrasos",
+      tone: overdueAppointments ? "danger" : ""
+    }
+  ];
+  el.priorityStrip.innerHTML = priorities.map((item) => `<article class="priority-card ${item.tone}">
+    <span>${escapeHtml(item.label)}</span>
+    <strong>${escapeHtml(item.value)}</strong>
+    <small>${escapeHtml(item.detail)}</small>
+  </article>`).join("");
 }
 
 function renderDecisionCharts() {
@@ -2526,7 +2587,7 @@ function applyPreset(name) {
     teal: {
       brand: "#0B3B63",
       brandStrong: "#082C4A",
-      sidebar: "#0B3B63",
+      sidebar: "#FFFFFF",
       page: "#F5F7FA",
       panel: "#ffffff",
       accent: "#20C7D8"
@@ -3025,31 +3086,46 @@ function openOrderPdf(orderId) {
   const trackingUrl = buildTrackingUrl(order);
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(trackingUrl)}`;
   el.printArea.innerHTML = `<section class="print-sheet">
+    <div class="print-brandbar"></div>
     <div class="print-header">
-      <div>
-        <h2>${escapeHtml(state.settings.businessName)}</h2>
-        <p>${escapeHtml(state.settings.businessAddress || "")}</p>
-        <p>WhatsApp: ${escapeHtml(state.settings.businessPhone || "")}</p>
+      <div class="print-brand">
+        <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
+        <div>
+          <h2>${escapeHtml(state.settings.businessName)}</h2>
+          <p>${escapeHtml(state.settings.businessAddress || "Comitan de Dominguez, Chiapas")}</p>
+          <p>WhatsApp: ${escapeHtml(state.settings.businessPhone || "")}</p>
+        </div>
       </div>
-      <div>
-        <strong>Orden ${escapeHtml(order.folio)}</strong>
+      <div class="print-order-box">
+        <span>Orden de servicio</span>
+        <strong>${escapeHtml(order.folio)}</strong>
         <p>${dateFormat.format(new Date(order.createdAt))}</p>
         <p>Codigo: ${escapeHtml(order.trackingCode || "N/A")}</p>
-        <img class="print-qr" src="${qrUrl}" alt="QR de seguimiento">
       </div>
     </div>
-    <div class="print-row">
-      <div>
-        <strong>Cliente</strong>
-        <p>${escapeHtml(client.name)}</p>
+    <div class="print-summary">
+      <div><span>Estado</span><strong>${escapeHtml(order.status)}</strong></div>
+      <div><span>Total</span><strong>${money.format(Number(order.total || 0))}</strong></div>
+      <div><span>Pagado</span><strong>${money.format(paid)}</strong></div>
+      <div><span>Saldo</span><strong>${balance <= 0 ? "Pagado" : money.format(balance)}</strong></div>
+    </div>
+    <div class="print-grid">
+      <div class="print-card">
+        <span>Cliente</span>
+        <strong>${escapeHtml(client.name)}</strong>
         <p>${escapeHtml(client.phone)}</p>
-        <p>${escapeHtml(client.email || "")}</p>
+        <p>${escapeHtml(client.email || "Sin correo registrado")}</p>
       </div>
-      <div>
-        <strong>Equipo</strong>
-        <p>${escapeHtml(order.device)}</p>
+      <div class="print-card">
+        <span>Equipo</span>
+        <strong>${escapeHtml(order.device)}</strong>
         <p>Serie/IMEI: ${escapeHtml(order.serial || "N/A")}</p>
-        <p>Estado: ${escapeHtml(order.status)}</p>
+        <p>Recepcion: ${escapeHtml(order.physicalState || "No registrada")}</p>
+      </div>
+      <div class="print-card print-qr-card">
+        <span>Seguimiento</span>
+        <img class="print-qr" src="${qrUrl}" alt="QR de seguimiento">
+        <p>Escanea para consultar avance</p>
       </div>
     </div>
     <div class="print-section">
@@ -3063,7 +3139,6 @@ function openOrderPdf(orderId) {
     <div class="print-section">
       <h3>Recepcion y evidencia</h3>
       <p><strong>Accesorios:</strong> ${escapeHtml(order.accessories || "No registrado")}</p>
-      <p><strong>Estado fisico:</strong> ${escapeHtml(order.physicalState || "No registrado")}</p>
       <p><strong>Clave / patron:</strong> ${escapeHtml(order.passcode || order.patternValue || "No registrado")}</p>
       <p><strong>Evidencia:</strong> ${escapeHtml(order.evidence || "No registrada")}</p>
       <p><strong>Aprobacion:</strong> ${order.approved ? "Cliente aprueba diagnostico y condiciones" : "Pendiente de aprobacion"}</p>
@@ -3078,11 +3153,7 @@ function openOrderPdf(orderId) {
       <h3>Garantia</h3>
       <p>${escapeHtml(warranty || "Sin garantia registrada")}</p>
     </div>
-    <div class="print-section print-row">
-      <p><strong>Pagado:</strong> ${money.format(paid)}</p>
-      <p><strong>Saldo:</strong> ${balance <= 0 ? "Pagado" : money.format(balance)}</p>
-      <p><strong>Total:</strong> ${money.format(Number(order.total || 0))}</p>
-    </div>
+    <div class="print-footer-note">Documento generado por PCFix Comitan. Conserva esta orden para seguimiento, garantia y entrega del equipo.</div>
   </section>`;
   el.pdfDialog.showModal();
 }
@@ -3256,8 +3327,8 @@ function clearData() {
 }
 
 function hydrateApiForm() {
-  el.apiBaseUrl.value = apiConfig.baseUrl || "http://localhost:8080";
-  el.apiEmail.value = apiConfig.email || "admin@pcfix.local";
+  el.apiBaseUrl.value = apiConfig.baseUrl || productionApiBaseUrl;
+  el.apiEmail.value = apiConfig.email || defaultApiEmail;
   el.apiPassword.value = "";
   el.serverMode.checked = Boolean(apiConfig.serverMode);
   updateApiStatus();
@@ -3287,15 +3358,7 @@ async function loginBackend() {
   try {
     apiConfig.baseUrl = el.apiBaseUrl.value.trim().replace(/\/$/, "");
     apiConfig.email = el.apiEmail.value.trim();
-    const response = await fetch(`${apiConfig.baseUrl}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: apiConfig.email, password: el.apiPassword.value })
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "No se pudo conectar.");
-    apiConfig.token = payload.token;
-    apiConfig.user = payload.user;
+    await authenticateBackend(apiConfig.baseUrl, apiConfig.email, el.apiPassword.value);
     saveApiConfig();
     updateApiStatus();
     loadBackendUsers();
@@ -3308,6 +3371,21 @@ async function loginBackend() {
   } catch (error) {
     alert(`Error de conexion: ${error.message}`);
   }
+}
+
+async function authenticateBackend(baseUrl, email, password) {
+  const response = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "No se pudo conectar.");
+  apiConfig.baseUrl = baseUrl;
+  apiConfig.email = email;
+  apiConfig.token = payload.token;
+  apiConfig.user = payload.user;
+  return payload;
 }
 
 function disconnectBackend() {
@@ -3521,6 +3599,30 @@ async function autoRecoverFromBackendIfEmpty() {
   el.apiStatus.textContent = "Recuperando backend...";
   await pullBackendData({ silent: true });
   updateApiStatus();
+}
+
+async function cloudStartupSync() {
+  if (document.body.classList.contains("public-portal-mode") || !navigator.onLine) return;
+  try {
+    apiConfig.baseUrl = (apiConfig.baseUrl || productionApiBaseUrl).replace(/\/$/, "");
+    apiConfig.email = apiConfig.email || defaultApiEmail;
+    apiConfig.serverMode = true;
+    el.apiStatus.textContent = "Conectando nube...";
+    if (!apiConfig.token) {
+      await authenticateBackend(apiConfig.baseUrl, apiConfig.email, defaultApiPassword);
+    }
+    saveApiConfig();
+    hydrateApiForm();
+    if (syncQueue.length) {
+      await pushLocalData(false, { silent: true, allowEmpty: true });
+    }
+    el.apiStatus.textContent = "Descargando nube...";
+    await pullBackendData({ silent: true });
+    updateApiStatus();
+    scheduleServerSync(true);
+  } catch (error) {
+    el.apiStatus.textContent = "Nube no conectada";
+  }
 }
 
 function emptyHtml(title = "Sin registros", detail = "Agrega informacion para comenzar.") {

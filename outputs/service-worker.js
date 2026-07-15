@@ -1,4 +1,4 @@
-const cacheName = "pcfix-app-v4";
+const cacheName = "pcfix-app-v7";
 const appShell = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const appShell = [
   "./app.js",
   "./manifest.webmanifest",
   "./assets/app-icon.svg",
+  "./assets/logo-pcfix.png",
   "./assets/README.txt"
 ];
 
