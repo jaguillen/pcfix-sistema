@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="PCFix">
-  <rect width="512" height="512" rx="112" fill="#0B3B63"/>
-  <path fill="#20C7D8" d="M128 336h256v36c0 20-16 36-36 36H164c-20 0-36-16-36-36v-36Z"/>
-  <rect x="116" y="112" width="280" height="216" rx="34" fill="#fff"/>
-  <rect x="148" y="144" width="216" height="144" rx="18" fill="#F5F7FA"/>
-  <path fill="#0B3B63" d="M181 179h72c43 0 68 24 68 60s-25 60-68 60h-34v42h-38V179Zm68 88c21 0 33-10 33-28s-12-28-33-28h-30v56h30Z"/>
-  <path fill="#20C7D8" d="M331 184h42l-47 59 51 65h-44l-29-39-29 39h-42l50-64-47-60h44l25 35 26-35Z"/>
-</svg>

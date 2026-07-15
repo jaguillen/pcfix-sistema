@@ -1,3 +1,4 @@
+const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-01";
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
 const SESSION_KEY = "pcfix-online-session-v2";
@@ -858,6 +859,7 @@ function escapeHtml(value) {
 }
 
 Object.assign(window, {
+  PCFIX_FRONTEND_VERSION,
   editClient,
   editSupplier,
   editInventory,

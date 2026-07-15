@@ -1,50 +1,55 @@
-# PCFix Sistema
+# PCFix Comitan - Repo limpio
 
-Sistema web para PCFix Comitan con:
+Frontend limpio conectado directo a backend/Postgres.
 
-- Clientes
-- Ordenes de reparacion
-- Inventario
-- Proveedores
-- Agenda
-- Compras
-- Caja
-- Garantias
-- Portal de cliente
-- PDF, evidencia fotografica, firma, QR y seguimiento
-- Backend local sin npm
-- Backend Express/SQLite para produccion
-- Configuracion para Render
+Version frontend:
 
-## Abrir local
+`pcfix-rebuild-bd-directa-manual-20260715-01`
 
-Abre:
+## Que subir a GitHub
 
-```text
-outputs/index.html
+Sube TODO el contenido de esta carpeta como raiz del repositorio.
+
+Incluye:
+
+- `index.html`
+- `app.js`
+- `styles.css`
+- `service-worker.js`
+- `manifest.webmanifest`
+- `assets/`
+- `backend/`
+- `render.yaml`
+- `supabase-crear-tablas-profesionales.sql`
+
+No incluye `.env` real.
+
+## Render
+
+El `render.yaml` crea:
+
+- `pcfix-backend`: backend Node/Postgres desde `backend/`.
+- `pcfix-sistema`: frontend static desde la raiz.
+
+Variables necesarias en backend:
+
+- `DATABASE_URL`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `JWT_SECRET`
+
+## Verificar frontend correcto
+
+En consola del navegador:
+
+```js
+window.PCFIX_FRONTEND_VERSION
 ```
 
-## Backend sin npm
+Debe devolver:
 
-Usa:
-
-```text
-outputs/production/no-npm-backend/iniciar-backend.bat
+```txt
+pcfix-rebuild-bd-directa-manual-20260715-01
 ```
 
-Credenciales iniciales:
-
-```text
-admin@pcfix.local
-Cambiar123!
-```
-
-## Deploy gratis
-
-Lee:
-
-```text
-outputs/production/DEPLOY-GRATIS.md
-```
-
-El archivo `render.yaml` ya esta preparado para Render.
+Si aparece `storageKey`, `pcfix-system-v1`, `pendingSyncKey` o `localSnapshotKey`, el hosting sigue sirviendo la version vieja.
