@@ -59,10 +59,11 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-bd-directa-20260715-03
+pcfix-backend-bd-directa-20260715-04
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:
+En `purchaseSource` veras la tabla exacta consultada, conteos y folios visibles para el backend.
 
 ```sql
 select count(*) from purchases where archived = false;

@@ -12,7 +12,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-bd-directa-20260715-03";
+const backendVersion = "pcfix-backend-bd-directa-20260715-04";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -847,6 +847,7 @@ app.get(["/", "/health", "/api/health"], (_req, res) => res.json({
 
 app.get("/api/stability", async (_req, res) => {
   const report = await getStabilityReport();
+  const purchaseSource = await getPurchaseSourceReport();
   res.json({
     ok: report.ok,
     service: "PCFix backend",
@@ -861,6 +862,7 @@ app.get("/api/stability", async (_req, res) => {
     },
     totals: report.totals,
     normalizedTotals: report.normalizedTotals,
+    purchaseSource,
     duplicates: report.duplicates,
     adminRepair: "/api/admin/stability/repair"
   });
@@ -1005,6 +1007,10 @@ app.get("/api/admin/integrity", requireAuth, requireRole("admin", "manager"), as
   res.json(await getIntegrityReport());
 });
 
+app.get("/api/admin/purchases/source", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
+  res.json(await getPurchaseSourceReport(true));
+});
+
 app.post("/api/admin/stability/repair", requireAuth, requireRole("admin"), async (req, res) => {
   await repairProfessionalDuplicateBusinessKeys();
   await audit(req.user.sub, "manual_stability_repair", "professional_tables", "", "Reparacion manual de duplicados");
@@ -1050,6 +1056,57 @@ async function getStabilityReport() {
     },
     totals: totals.rows,
     normalizedTotals
+  };
+}
+
+async function getPurchaseSourceReport(includeRows = false) {
+  const [dbInfo, purchaseCounts, recordsTable, purchaseRows] = await Promise.all([
+    query(`
+      SELECT
+        current_database() AS database,
+        current_schema() AS schema,
+        inet_server_addr()::text AS server_addr,
+        inet_server_port()::text AS server_port
+    `),
+    query(`
+      SELECT
+        COUNT(*) FILTER (WHERE archived = FALSE)::int AS active,
+        COUNT(*) FILTER (WHERE archived = TRUE)::int AS archived,
+        COUNT(*)::int AS total
+      FROM purchases
+    `),
+    query(`
+      SELECT to_regclass('public.records') IS NOT NULL AS exists
+    `),
+    query(`
+      SELECT id, folio, status, archived, updated_at
+      FROM purchases
+      ORDER BY updated_at DESC
+    `)
+  ]);
+  const legacyExists = Boolean(recordsTable.rows[0]?.exists);
+  let legacyPurchaseRecords = 0;
+  if (legacyExists) {
+    const legacy = await query("SELECT COUNT(*)::int AS total FROM records WHERE type = 'purchase'");
+    legacyPurchaseRecords = legacy.rows[0]?.total || 0;
+  }
+  return {
+    backendVersion,
+    sourceTable: "purchases",
+    selectUsedByApp: "SELECT id, raw_data AS data, archived, created_at, updated_at FROM purchases WHERE archived = FALSE ORDER BY updated_at DESC",
+    database: dbInfo.rows[0],
+    counts: purchaseCounts.rows[0],
+    legacyRecordsTable: {
+      exists: legacyExists,
+      purchaseRows: legacyPurchaseRecords
+    },
+    rows: includeRows ? purchaseRows.rows : purchaseRows.rows.map((row) => ({
+      id: row.id,
+      folio: row.folio,
+      status: row.status,
+      archived: row.archived,
+      updated_at: row.updated_at
+    }))
   };
 }
 
