@@ -33,7 +33,8 @@ const allowedTypes = new Set([
   "purchase",
   "payment",
   "inventoryMovement",
-  "warrantyClaim"
+  "warrantyClaim",
+  "auditEntry"
 ]);
 
 function now() {
@@ -42,6 +43,29 @@ function now() {
 
 function id(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function normalizeKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function appendConsecutive(value, number) {
+  const base = String(value || "").trim();
+  return `${base || "REGISTRO"}-${number}`;
+}
+
+function safeJsonField(field) {
+  if (!["folio", "trackingCode"].includes(field)) throw new Error("Campo JSON no permitido");
+  return field;
+}
+
+function asNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function asJson(value, fallback = []) {
+  return JSON.stringify(value ?? fallback);
 }
 
 function normalizeRecord(row) {
@@ -83,6 +107,8 @@ async function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_records_type ON records(type);
     CREATE INDEX IF NOT EXISTS idx_records_archived ON records(archived);
+    CREATE INDEX IF NOT EXISTS idx_records_order_folio_lookup ON records (lower(data->>'folio')) WHERE type = 'order' AND archived = FALSE;
+    CREATE INDEX IF NOT EXISTS idx_records_order_tracking_lookup ON records ((data->>'trackingCode')) WHERE type = 'order' AND archived = FALSE;
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
@@ -105,6 +131,8 @@ async function initDb() {
     );
   `);
 
+  await runStabilityMigration();
+
   const adminEmail = (process.env.ADMIN_EMAIL || "admin@pcfix.local").toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD || "Cambiar123!";
   const existing = await query("SELECT id FROM users WHERE email = $1", [adminEmail]);
@@ -117,11 +145,585 @@ async function initDb() {
   }
 }
 
+async function runStabilityMigration() {
+  await repairDuplicateBusinessKeys();
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_order_folio
+      ON records (lower(data->>'folio'))
+      WHERE type = 'order' AND archived = FALSE AND COALESCE(data->>'folio', '') <> '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_order_tracking
+      ON records ((data->>'trackingCode'))
+      WHERE type = 'order' AND archived = FALSE AND COALESCE(data->>'trackingCode', '') <> '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_purchase_folio
+      ON records (lower(data->>'folio'))
+      WHERE type = 'purchase' AND archived = FALSE AND COALESCE(data->>'folio', '') <> '';
+  `);
+  await createProfessionalSchema();
+  await syncAllNormalizedTables();
+  await createProfessionalConstraints();
+}
+
+async function createProfessionalSchema() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      id TEXT PRIMARY KEY DEFAULT 'settings',
+      business_name TEXT,
+      business_phone TEXT,
+      business_address TEXT,
+      whatsapp_template TEXT,
+      theme JSONB NOT NULL DEFAULT '{}'::jsonb,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS clients (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      address TEXT,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    DROP INDEX IF EXISTS uq_clients_phone_active;
+
+    CREATE INDEX IF NOT EXISTS idx_clients_phone_active
+      ON clients (regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'))
+      WHERE archived = FALSE AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') <> '';
+
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      contact TEXT,
+      phone TEXT,
+      email TEXT,
+      category TEXT,
+      notes TEXT,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_items (
+      id TEXT PRIMARY KEY,
+      brand TEXT,
+      model TEXT,
+      name TEXT NOT NULL,
+      category TEXT,
+      stock NUMERIC NOT NULL DEFAULT 0 CHECK (stock >= 0),
+      min_stock NUMERIC NOT NULL DEFAULT 1 CHECK (min_stock >= 0),
+      cost NUMERIC NOT NULL DEFAULT 0 CHECK (cost >= 0),
+      subdealer_price NUMERIC NOT NULL DEFAULT 0 CHECK (subdealer_price >= 0),
+      price NUMERIC NOT NULL DEFAULT 0 CHECK (price >= 0),
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_inventory_brand_model ON inventory_items (brand, model);
+    CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory_items (category);
+
+    CREATE TABLE IF NOT EXISTS service_orders (
+      id TEXT PRIMARY KEY,
+      folio TEXT NOT NULL,
+      tracking_code TEXT,
+      client_id TEXT,
+      device TEXT NOT NULL,
+      technician TEXT,
+      serial TEXT,
+      status TEXT NOT NULL,
+      issue TEXT,
+      notes TEXT,
+      accessories TEXT,
+      physical_state TEXT,
+      total NUMERIC NOT NULL DEFAULT 0 CHECK (total >= 0),
+      deposit NUMERIC NOT NULL DEFAULT 0 CHECK (deposit >= 0),
+      paid BOOLEAN NOT NULL DEFAULT FALSE,
+      warranty_days INTEGER NOT NULL DEFAULT 90 CHECK (warranty_days >= 0),
+      warranty_terms TEXT,
+      approved BOOLEAN NOT NULL DEFAULT FALSE,
+      quote_part_name TEXT,
+      quote_supplier_id TEXT,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      status_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status_evidence_photos JSONB NOT NULL DEFAULT '[]'::jsonb,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    DROP INDEX IF EXISTS uq_service_orders_folio_active;
+    DROP INDEX IF EXISTS uq_service_orders_tracking_active;
+
+    CREATE INDEX IF NOT EXISTS idx_service_orders_client ON service_orders (client_id);
+    CREATE INDEX IF NOT EXISTS idx_service_orders_status ON service_orders (status);
+
+    CREATE TABLE IF NOT EXISTS order_parts (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES service_orders(id) ON DELETE CASCADE,
+      inventory_id TEXT,
+      purchase_id TEXT,
+      purchase_item_id TEXT,
+      part_name TEXT NOT NULL,
+      qty NUMERIC NOT NULL DEFAULT 1 CHECK (qty > 0),
+      cost NUMERIC NOT NULL DEFAULT 0 CHECK (cost >= 0),
+      total_cost NUMERIC NOT NULL DEFAULT 0 CHECK (total_cost >= 0),
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_parts_order ON order_parts (order_id);
+    CREATE INDEX IF NOT EXISTS idx_order_parts_inventory ON order_parts (inventory_id);
+
+    CREATE TABLE IF NOT EXISTS purchases (
+      id TEXT PRIMARY KEY,
+      folio TEXT NOT NULL,
+      supplier_id TEXT,
+      order_id TEXT,
+      part TEXT,
+      qty NUMERIC NOT NULL DEFAULT 1 CHECK (qty >= 0),
+      cost NUMERIC NOT NULL DEFAULT 0 CHECK (cost >= 0),
+      status TEXT NOT NULL,
+      notes TEXT,
+      received_at TEXT,
+      received_quantities JSONB NOT NULL DEFAULT '{}'::jsonb,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    DROP INDEX IF EXISTS uq_purchases_folio_active;
+
+    CREATE INDEX IF NOT EXISTS idx_purchases_order ON purchases (order_id);
+    CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases (supplier_id);
+
+    CREATE TABLE IF NOT EXISTS purchase_items (
+      id TEXT PRIMARY KEY,
+      purchase_id TEXT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+      part TEXT NOT NULL,
+      qty NUMERIC NOT NULL DEFAULT 1 CHECK (qty > 0),
+      cost NUMERIC NOT NULL DEFAULT 0 CHECK (cost >= 0),
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON purchase_items (purchase_id);
+
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      order_id TEXT,
+      amount NUMERIC NOT NULL DEFAULT 0 CHECK (amount >= 0),
+      method TEXT,
+      reference TEXT,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_payments_order ON payments (order_id);
+
+    CREATE TABLE IF NOT EXISTS appointments (
+      id TEXT PRIMARY KEY,
+      client_id TEXT,
+      order_id TEXT,
+      date TEXT,
+      time TEXT,
+      type TEXT,
+      notes TEXT,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments (date);
+
+    CREATE TABLE IF NOT EXISTS warranty_claims (
+      id TEXT PRIMARY KEY,
+      order_id TEXT,
+      reason TEXT,
+      resolution TEXT,
+      status TEXT,
+      cost NUMERIC NOT NULL DEFAULT 0 CHECK (cost >= 0),
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_warranty_claims_order ON warranty_claims (order_id);
+
+    CREATE TABLE IF NOT EXISTS inventory_movements (
+      id TEXT PRIMARY KEY,
+      item_id TEXT,
+      item_name TEXT,
+      qty NUMERIC NOT NULL DEFAULT 0,
+      type TEXT,
+      detail TEXT,
+      ref_id TEXT,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_inventory_movements_item ON inventory_movements (item_id);
+
+    CREATE TABLE IF NOT EXISTS audit_entries (
+      id TEXT PRIMARY KEY,
+      type TEXT,
+      detail TEXT,
+      ref_id TEXT,
+      raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL
+    );
+  `);
+}
+
+async function repairDuplicateBusinessKeys() {
+  const repairedOrders = await repairDuplicatesForType("order", [
+    {
+      name: "folio",
+      get: (data) => data.folio,
+      set: (data, value) => ({ ...data, folio: value })
+    },
+    {
+      name: "trackingCode",
+      get: (data) => data.trackingCode,
+      set: (data, value) => ({ ...data, trackingCode: value })
+    }
+  ]);
+  const repairedPurchases = await repairDuplicatesForType("purchase", [
+    {
+      name: "folio",
+      get: (data) => data.folio,
+      set: (data, value) => ({ ...data, folio: value })
+    }
+  ]);
+  if (repairedOrders + repairedPurchases > 0) {
+    await audit(null, "stability_migration", "records", "", `${repairedOrders + repairedPurchases} duplicado(s) reparados`);
+  }
+}
+
+async function repairDuplicatesForType(type, fields) {
+  const result = await query(
+    "SELECT * FROM records WHERE type = $1 AND archived = FALSE ORDER BY created_at ASC, updated_at ASC",
+    [type]
+  );
+  const rows = result.rows.map(normalizeRecord);
+  let changed = 0;
+  for (const field of fields) {
+    const seen = new Set();
+    for (const row of rows) {
+      const currentValue = String(field.get(row.data) || "").trim();
+      if (!currentValue) continue;
+      let candidate = currentValue;
+      let key = normalizeKey(candidate);
+      if (!seen.has(key)) {
+        seen.add(key);
+        continue;
+      }
+      let consecutive = 2;
+      do {
+        candidate = appendConsecutive(currentValue, consecutive);
+        key = normalizeKey(candidate);
+        consecutive += 1;
+      } while (seen.has(key));
+      row.data = field.set(row.data, candidate);
+      seen.add(key);
+      changed += 1;
+      await query(
+        "UPDATE records SET data = $1, updated_at = $2 WHERE id = $3 AND type = $4",
+        [JSON.stringify(row.data), now(), row.id, type]
+      );
+    }
+  }
+  return changed;
+}
+
+async function syncAllNormalizedTables() {
+  await clearNormalizedProjection();
+  const result = await query("SELECT * FROM records ORDER BY created_at ASC, updated_at ASC");
+  for (const row of result.rows.map(normalizeRecord)) {
+    await syncNormalizedRecord(row.type, row.data, row.archived, row.created_at, row.updated_at);
+  }
+}
+
+async function clearNormalizedProjection() {
+  await query(`
+    DELETE FROM order_parts;
+    DELETE FROM purchase_items;
+    DELETE FROM payments;
+    DELETE FROM appointments;
+    DELETE FROM warranty_claims;
+    DELETE FROM inventory_movements;
+    DELETE FROM audit_entries;
+    DELETE FROM purchases;
+    DELETE FROM service_orders;
+    DELETE FROM inventory_items;
+    DELETE FROM suppliers;
+    DELETE FROM clients;
+    DELETE FROM app_settings;
+  `);
+}
+
+async function createProfessionalConstraints() {
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_service_orders_folio_active
+      ON service_orders (lower(folio))
+      WHERE archived = FALSE;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_service_orders_tracking_active
+      ON service_orders (tracking_code)
+      WHERE archived = FALSE AND COALESCE(tracking_code, '') <> '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_folio_active
+      ON purchases (lower(folio))
+      WHERE archived = FALSE;
+  `);
+}
+
+async function syncNormalizedRecord(type, data, archived = false, createdAt = now(), updatedAt = now()) {
+  if (!data?.id && type !== "settings") return;
+  const created = data.createdAt || createdAt || now();
+  const updated = data.updatedAt || updatedAt || created;
+  if (type === "settings") {
+    await query(
+      `INSERT INTO app_settings (id,business_name,business_phone,business_address,whatsapp_template,theme,raw_data,updated_at)
+       VALUES ('settings',$1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (id) DO UPDATE SET
+        business_name = EXCLUDED.business_name,
+        business_phone = EXCLUDED.business_phone,
+        business_address = EXCLUDED.business_address,
+        whatsapp_template = EXCLUDED.whatsapp_template,
+        theme = EXCLUDED.theme,
+        raw_data = EXCLUDED.raw_data,
+        updated_at = EXCLUDED.updated_at`,
+      [data.businessName || "", data.businessPhone || "", data.businessAddress || "", data.whatsappTemplate || "", asJson(data.theme, {}), JSON.stringify(data), updated]
+    );
+    return;
+  }
+  if (type === "client") {
+    await query(
+      `INSERT INTO clients (id,name,phone,email,address,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name, phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address,
+        archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [data.id, data.name || "Cliente", data.phone || "", data.email || "", data.address || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+    );
+    return;
+  }
+  if (type === "supplier") {
+    await query(
+      `INSERT INTO suppliers (id,name,contact,phone,email,category,notes,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name, contact = EXCLUDED.contact, phone = EXCLUDED.phone, email = EXCLUDED.email,
+        category = EXCLUDED.category, notes = EXCLUDED.notes, archived = EXCLUDED.archived,
+        raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [data.id, data.name || "Proveedor", data.contact || "", data.phone || "", data.email || "", data.category || "", data.notes || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+    );
+    return;
+  }
+  if (type === "inventory") {
+    await query(
+      `INSERT INTO inventory_items (id,brand,model,name,category,stock,min_stock,cost,subdealer_price,price,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (id) DO UPDATE SET
+        brand = EXCLUDED.brand, model = EXCLUDED.model, name = EXCLUDED.name, category = EXCLUDED.category,
+        stock = EXCLUDED.stock, min_stock = EXCLUDED.min_stock, cost = EXCLUDED.cost,
+        subdealer_price = EXCLUDED.subdealer_price, price = EXCLUDED.price, archived = EXCLUDED.archived,
+        raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [
+        data.id, data.brand || "", data.model || "", data.name || [data.brand, data.model].filter(Boolean).join(" ") || "Articulo",
+        data.category || "", Math.max(0, asNumber(data.stock)), Math.max(0, asNumber(data.min ?? data.minStock ?? 1)),
+        Math.max(0, asNumber(data.cost)), Math.max(0, asNumber(data.subdealerPrice)), Math.max(0, asNumber(data.price)),
+        Boolean(archived || data.archived), JSON.stringify(data), created, updated
+      ]
+    );
+    return;
+  }
+  if (type === "order") {
+    await query(
+      `INSERT INTO service_orders (id,folio,tracking_code,client_id,device,technician,serial,status,issue,notes,accessories,physical_state,total,deposit,paid,warranty_days,warranty_terms,approved,quote_part_name,quote_supplier_id,archived,status_history,status_evidence_photos,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+       ON CONFLICT (id) DO UPDATE SET
+        folio = EXCLUDED.folio, tracking_code = EXCLUDED.tracking_code, client_id = EXCLUDED.client_id,
+        device = EXCLUDED.device, technician = EXCLUDED.technician, serial = EXCLUDED.serial, status = EXCLUDED.status,
+        issue = EXCLUDED.issue, notes = EXCLUDED.notes, accessories = EXCLUDED.accessories, physical_state = EXCLUDED.physical_state,
+        total = EXCLUDED.total, deposit = EXCLUDED.deposit, paid = EXCLUDED.paid, warranty_days = EXCLUDED.warranty_days,
+        warranty_terms = EXCLUDED.warranty_terms, approved = EXCLUDED.approved, quote_part_name = EXCLUDED.quote_part_name,
+        quote_supplier_id = EXCLUDED.quote_supplier_id, archived = EXCLUDED.archived, status_history = EXCLUDED.status_history,
+        status_evidence_photos = EXCLUDED.status_evidence_photos, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [
+        data.id, data.folio || data.id, data.trackingCode || "", data.clientId || "", data.device || "Equipo",
+        data.technician || "", data.serial || "", data.status || "Recibido", data.issue || "", data.notes || "",
+        data.accessories || "", data.physicalState || "", Math.max(0, asNumber(data.total)), Math.max(0, asNumber(data.deposit)),
+        Boolean(data.paid), Math.max(0, Number(data.warrantyDays || 90)), data.warrantyTerms || "", Boolean(data.approved),
+        data.quotePartName || "", data.quoteSupplierId || "", Boolean(archived || data.archived), asJson(data.statusHistory),
+        asJson(data.statusEvidencePhotos), JSON.stringify(data), created, updated
+      ]
+    );
+    await query("DELETE FROM order_parts WHERE order_id = $1", [data.id]);
+    const suppliedParts = Array.isArray(data.suppliedParts) ? data.suppliedParts : [];
+    for (const part of suppliedParts) {
+      await query(
+        `INSERT INTO order_parts (id,order_id,inventory_id,purchase_id,purchase_item_id,part_name,qty,cost,total_cost,raw_data,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (id) DO UPDATE SET
+          inventory_id = EXCLUDED.inventory_id, purchase_id = EXCLUDED.purchase_id, purchase_item_id = EXCLUDED.purchase_item_id,
+          part_name = EXCLUDED.part_name, qty = EXCLUDED.qty, cost = EXCLUDED.cost, total_cost = EXCLUDED.total_cost,
+          raw_data = EXCLUDED.raw_data`,
+        [
+          part.id || id("op"), data.id, part.inventoryId || "", part.purchaseId || "", part.purchaseItemId || "",
+          part.part || "Refaccion", Math.max(0.01, asNumber(part.qty || 1)), Math.max(0, asNumber(part.cost)),
+          Math.max(0, asNumber(part.totalCost ?? asNumber(part.qty || 1) * asNumber(part.cost))), JSON.stringify(part),
+          part.createdAt || updated
+        ]
+      );
+    }
+    return;
+  }
+  if (type === "purchase") {
+    await query(
+      `INSERT INTO purchases (id,folio,supplier_id,order_id,part,qty,cost,status,notes,received_at,received_quantities,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (id) DO UPDATE SET
+        folio = EXCLUDED.folio, supplier_id = EXCLUDED.supplier_id, order_id = EXCLUDED.order_id, part = EXCLUDED.part,
+        qty = EXCLUDED.qty, cost = EXCLUDED.cost, status = EXCLUDED.status, notes = EXCLUDED.notes,
+        received_at = EXCLUDED.received_at, received_quantities = EXCLUDED.received_quantities,
+        archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [
+        data.id, data.folio || data.id, data.supplierId || "", data.orderId || "", data.part || "",
+        Math.max(0, asNumber(data.qty || 1)), Math.max(0, asNumber(data.cost)), data.status || "Cotizando",
+        data.notes || "", data.receivedAt || "", asJson(data.receivedQuantities, {}), Boolean(archived || data.archived),
+        JSON.stringify(data), created, updated
+      ]
+    );
+    await query("DELETE FROM purchase_items WHERE purchase_id = $1", [data.id]);
+    const items = Array.isArray(data.items) && data.items.length ? data.items : [{ id: id("pitem"), part: data.part, qty: data.qty, cost: data.cost }];
+    for (const item of items.filter((entry) => entry?.part)) {
+      await query(
+        `INSERT INTO purchase_items (id,purchase_id,part,qty,cost,raw_data)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (id) DO UPDATE SET part = EXCLUDED.part, qty = EXCLUDED.qty, cost = EXCLUDED.cost, raw_data = EXCLUDED.raw_data`,
+        [item.id || id("pitem"), data.id, item.part, Math.max(0.01, asNumber(item.qty || 1)), Math.max(0, asNumber(item.cost)), JSON.stringify(item)]
+      );
+    }
+    return;
+  }
+  if (type === "payment") {
+    await query(
+      `INSERT INTO payments (id,order_id,amount,method,reference,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET
+        order_id = EXCLUDED.order_id, amount = EXCLUDED.amount, method = EXCLUDED.method, reference = EXCLUDED.reference,
+        archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [data.id, data.orderId || "", Math.max(0, asNumber(data.amount)), data.method || "", data.reference || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+    );
+    return;
+  }
+  if (type === "appointment") {
+    await query(
+      `INSERT INTO appointments (id,client_id,order_id,date,time,type,notes,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (id) DO UPDATE SET
+        client_id = EXCLUDED.client_id, order_id = EXCLUDED.order_id, date = EXCLUDED.date, time = EXCLUDED.time,
+        type = EXCLUDED.type, notes = EXCLUDED.notes, archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data,
+        updated_at = EXCLUDED.updated_at`,
+      [data.id, data.clientId || "", data.orderId || "", data.date || "", data.time || "", data.type || "", data.notes || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+    );
+    return;
+  }
+  if (type === "warrantyClaim") {
+    await query(
+      `INSERT INTO warranty_claims (id,order_id,reason,resolution,status,cost,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (id) DO UPDATE SET
+        order_id = EXCLUDED.order_id, reason = EXCLUDED.reason, resolution = EXCLUDED.resolution, status = EXCLUDED.status,
+        cost = EXCLUDED.cost, archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+      [data.id, data.orderId || "", data.reason || "", data.resolution || "", data.status || "", Math.max(0, asNumber(data.cost)), Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+    );
+    return;
+  }
+  if (type === "inventoryMovement") {
+    await query(
+      `INSERT INTO inventory_movements (id,item_id,item_name,qty,type,detail,ref_id,raw_data,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET
+        item_id = EXCLUDED.item_id, item_name = EXCLUDED.item_name, qty = EXCLUDED.qty, type = EXCLUDED.type,
+        detail = EXCLUDED.detail, ref_id = EXCLUDED.ref_id, raw_data = EXCLUDED.raw_data`,
+      [data.id, data.itemId || "", data.itemName || "", asNumber(data.qty), data.type || "", data.detail || "", data.refId || "", JSON.stringify(data), created]
+    );
+    return;
+  }
+  if (type === "auditEntry") {
+    await query(
+      `INSERT INTO audit_entries (id,type,detail,ref_id,raw_data,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, detail = EXCLUDED.detail, ref_id = EXCLUDED.ref_id, raw_data = EXCLUDED.raw_data`,
+      [data.id, data.type || "", data.detail || "", data.refId || "", JSON.stringify(data), created]
+    );
+  }
+}
+
 async function audit(userId, action, recordType, recordId, detail = "") {
   await query(
     "INSERT INTO audit_log (id,user_id,action,record_type,record_id,detail,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     [id("aud"), userId || null, action, recordType || null, recordId || null, detail, now()]
   );
+}
+
+async function prepareRecordForSave(type, requestedId, record) {
+  const data = { ...record };
+  let recordId = requestedId || data.id || id(type.slice(0, 3));
+  recordId = await resolveRecordId(type, recordId);
+  data.id = recordId;
+
+  if (type === "order") {
+    if (data.folio) data.folio = await resolveUniqueJsonField(type, recordId, "folio", data.folio);
+    if (data.trackingCode) data.trackingCode = await resolveUniqueJsonField(type, recordId, "trackingCode", data.trackingCode);
+  }
+  if (type === "purchase" && data.folio) {
+    data.folio = await resolveUniqueJsonField(type, recordId, "folio", data.folio);
+  }
+  return { recordId, data };
+}
+
+async function resolveRecordId(type, requestedId) {
+  const baseId = String(requestedId || id(type.slice(0, 3))).trim();
+  let candidate = baseId;
+  let consecutive = 2;
+  while (true) {
+    const existing = await query("SELECT id,type FROM records WHERE id = $1 LIMIT 1", [candidate]);
+    if (!existing.rows.length || existing.rows[0].type === type) return candidate;
+    candidate = appendConsecutive(baseId, consecutive);
+    consecutive += 1;
+  }
+}
+
+async function resolveUniqueJsonField(type, recordId, field, value) {
+  const jsonField = safeJsonField(field);
+  const baseValue = String(value || "").trim();
+  if (!baseValue) return baseValue;
+  let candidate = baseValue;
+  let consecutive = 2;
+  while (true) {
+    const existing = await query(
+      `SELECT id FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'${jsonField}') = lower($2) AND id <> $3 LIMIT 1`,
+      [type, candidate, recordId]
+    );
+    if (!existing.rows.length) return candidate;
+    candidate = appendConsecutive(baseValue, consecutive);
+    consecutive += 1;
+  }
 }
 
 function signToken(user) {
@@ -161,8 +763,24 @@ app.get(["/", "/health", "/api/health"], (_req, res) => res.json({
   mode: "postgres",
   login: "/api/auth/login",
   health: "/api/health",
+  stability: "/api/stability",
   at: now()
 }));
+
+app.get("/api/stability", async (_req, res) => {
+  const report = await getStabilityReport();
+  res.json({
+    ok: report.ok,
+    service: "PCFix backend",
+    mode: "postgres",
+    professionalDatabase: true,
+    restrictions: report.restrictions,
+    totals: report.totals,
+    normalizedTotals: report.normalizedTotals,
+    duplicates: report.duplicates,
+    adminRepair: "/api/admin/stability/repair"
+  });
+});
 
 app.post("/api/auth/login", async (req, res) => {
   const email = String(req.body?.email || "").toLowerCase();
@@ -178,16 +796,18 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/public/orders/:folio", async (req, res) => {
   const folio = String(req.params.folio || "").toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
-  const result = await query(
-    "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 LIMIT 1",
-    ["order", folio]
-  );
+  const result = trackingCode
+    ? await query(
+        "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 AND data->>'trackingCode' = $3 ORDER BY updated_at DESC LIMIT 1",
+        ["order", folio, trackingCode]
+      )
+    : await query(
+        "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 ORDER BY updated_at DESC LIMIT 1",
+        ["order", folio]
+      );
   const row = result.rows[0];
   if (!row) return res.status(404).json({ error: "Orden no encontrada" });
   const order = normalizeRecord(row).data;
-  if (trackingCode && order.trackingCode && trackingCode !== order.trackingCode) {
-    return res.status(403).json({ error: "Codigo de seguimiento invalido" });
-  }
   const clientResult = await query(
     "SELECT * FROM records WHERE type = $1 AND id = $2 AND archived = FALSE LIMIT 1",
     ["client", order.clientId]
@@ -205,6 +825,7 @@ app.get("/api/public/orders/:folio", async (req, res) => {
       warrantyTerms: order.warrantyTerms,
       total: order.total,
       deposit: order.deposit,
+      trackingCode: order.trackingCode,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
       statusHistory: order.statusHistory || [],
@@ -231,24 +852,43 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
   const { type } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
   const record = req.body?.data || {};
-  const recordId = req.body?.id || record.id || id(type.slice(0, 3));
+  const prepared = await prepareRecordForSave(type, req.body?.id || record.id, record);
+  const { recordId, data } = prepared;
   const timestamp = now();
-  const data = { ...record, id: recordId };
   const existing = await query("SELECT id FROM records WHERE id = $1", [recordId]);
-  await query(
-    `INSERT INTO records (id,type,data,archived,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
-    [recordId, type, JSON.stringify(data), Boolean(record.archived), timestamp, timestamp]
-  );
+  try {
+    await query(
+      `INSERT INTO records (id,type,data,archived,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
+      [recordId, type, JSON.stringify(data), Boolean(record.archived), timestamp, timestamp]
+    );
+    await syncNormalizedRecord(type, data, Boolean(record.archived), timestamp, timestamp);
+  } catch (error) {
+    if (error?.code !== "23505") throw error;
+    const retry = await prepareRecordForSave(type, appendConsecutive(recordId, 2), data);
+    await query(
+      `INSERT INTO records (id,type,data,archived,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
+      [retry.recordId, type, JSON.stringify(retry.data), Boolean(record.archived), timestamp, timestamp]
+    );
+    await syncNormalizedRecord(type, retry.data, Boolean(record.archived), timestamp, timestamp);
+    await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${recordId}`);
+    return res.status(201).json({ id: retry.recordId, data: retry.data, deduped: true });
+  }
   await audit(req.user.sub, existing.rows.length ? "update" : "create", type, recordId, req.body?.detail || "");
-  res.status(existing.rows.length ? 200 : 201).json({ id: recordId, data });
+  res.status(existing.rows.length ? 200 : 201).json({ id: recordId, data, deduped: recordId !== (req.body?.id || record.id) });
 });
 
 app.post("/api/records/:type/:id/archive", requireAuth, requireRole("admin", "manager"), async (req, res) => {
   const { type, id: recordId } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
   await query("UPDATE records SET archived = TRUE, updated_at = $1 WHERE id = $2 AND type = $3", [now(), recordId, type]);
+  const archived = await query("SELECT * FROM records WHERE id = $1 AND type = $2 LIMIT 1", [recordId, type]);
+  if (archived.rows[0]) {
+    await syncNormalizedRecord(type, normalizeRecord(archived.rows[0]).data, true, archived.rows[0].created_at, now());
+  }
   await audit(req.user.sub, "archive", type, recordId, req.body?.detail || "");
   res.json({ ok: true });
 });
@@ -257,6 +897,80 @@ app.get("/api/audit", requireAuth, requireRole("admin", "manager"), async (_req,
   const result = await query("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 250");
   res.json(result.rows);
 });
+
+app.get("/api/admin/stability", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
+  res.json(await getStabilityReport());
+});
+
+app.post("/api/admin/stability/repair", requireAuth, requireRole("admin"), async (req, res) => {
+  await repairDuplicateBusinessKeys();
+  await audit(req.user.sub, "manual_stability_repair", "records", "", "Reparacion manual de duplicados");
+  res.json(await getStabilityReport());
+});
+
+async function getStabilityReport() {
+  const [ordersFolio, ordersTracking, purchasesFolio, totals, normalizedTotals] = await Promise.all([
+    findDuplicateJsonValues("order", "folio"),
+    findDuplicateJsonValues("order", "trackingCode"),
+    findDuplicateJsonValues("purchase", "folio"),
+    query("SELECT type, COUNT(*)::int AS total FROM records WHERE archived = FALSE GROUP BY type ORDER BY type"),
+    getNormalizedTotals()
+  ]);
+  return {
+    ok: !ordersFolio.length && !ordersTracking.length && !purchasesFolio.length,
+    restrictions: [
+      "orden.folio unico en ordenes activas",
+      "orden.trackingCode unico en ordenes activas",
+      "compra.folio unico en compras activas",
+      "id primario unico global en records",
+      "tablas profesionales sincronizadas por modulo"
+    ],
+    duplicates: {
+      orderFolio: ordersFolio,
+      orderTrackingCode: ordersTracking,
+      purchaseFolio: purchasesFolio
+    },
+    totals: totals.rows,
+    normalizedTotals
+  };
+}
+
+async function getNormalizedTotals() {
+  const tables = [
+    "clients",
+    "suppliers",
+    "inventory_items",
+    "service_orders",
+    "order_parts",
+    "purchases",
+    "purchase_items",
+    "payments",
+    "appointments",
+    "warranty_claims",
+    "inventory_movements",
+    "audit_entries"
+  ];
+  const totals = [];
+  for (const table of tables) {
+    const result = await query(`SELECT COUNT(*)::int AS total FROM ${table}`);
+    totals.push({ table, total: result.rows[0]?.total || 0 });
+  }
+  return totals;
+}
+
+async function findDuplicateJsonValues(type, field) {
+  const jsonField = safeJsonField(field);
+  const result = await query(
+    `SELECT data->>'${jsonField}' AS value, COUNT(*)::int AS total
+     FROM records
+     WHERE type = $1 AND archived = FALSE AND COALESCE(data->>'${jsonField}', '') <> ''
+     GROUP BY data->>'${jsonField}'
+     HAVING COUNT(*) > 1
+     ORDER BY total DESC, value ASC`,
+    [type]
+  );
+  return result.rows;
+}
 
 app.get("/api/users", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
   const result = await query("SELECT id,name,email,role,active,created_at FROM users ORDER BY created_at DESC");
