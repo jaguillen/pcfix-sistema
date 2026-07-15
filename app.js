@@ -1,7 +1,6 @@
 ﻿const storageKey = "pcfix-system-v1";
 const apiStorageKey = "pcfix-api-config-v1";
 const apiSessionKey = "pcfix-api-session-v1";
-const pendingSyncKey = "pcfix-pending-sync-v1";
 const localSnapshotKey = "pcfix-local-snapshots-v1";
 const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
 const productionApiBaseUrl = "https://pcfix-backend.onrender.com";
@@ -195,7 +194,7 @@ let activeView = "dashboard";
 let syncTimer = null;
 let isPullingFromBackend = false;
 let publicPortalContext = null;
-let syncQueue = loadSyncQueue();
+let syncQueue = [];
 let isSyncingNow = false;
 let purchaseDraftItems = [];
 let reconciliationTimer = null;
@@ -206,7 +205,6 @@ const ids = [
   "loginApiBaseUrl",
   "loginEmail",
   "loginPassword",
-  "loginOfflineBtn",
   "brandName",
   "today",
   "globalSearch",
@@ -386,20 +384,14 @@ const ids = [
   "themePage",
   "themePanel",
   "themeAccent",
-  "seedData",
   "exportBackup",
   "exportReports",
-  "importBackup",
-  "clearData",
   "apiStatus",
   "apiBaseUrl",
   "apiEmail",
   "apiPassword",
-  "offlineMode",
-  "serverMode",
   "apiLogin",
   "apiPull",
-  "apiPush",
   "apiDisconnect",
   "userCount",
   "newUserName",
@@ -424,6 +416,7 @@ const ids = [
 const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 document.addEventListener("DOMContentLoaded", () => {
+  purgeLegacyBrowserStorage();
   wireEvents();
   registerServiceWorker();
   el.today.textContent = dateFormat.format(new Date());
@@ -436,11 +429,15 @@ document.addEventListener("DOMContentLoaded", () => {
   enforceAccessMode();
   window.addEventListener("online", () => {
     updateApiStatus();
-    if (!apiConfig.offlineMode && apiConfig.token) cloudStartupSync();
+    if (apiConfig.token) cloudStartupSync();
   });
   window.addEventListener("offline", updateApiStatus);
-  if (apiConfig.serverMode && syncQueue.length) scheduleServerSync(true);
 });
+
+function purgeLegacyBrowserStorage() {
+  localStorage.removeItem(storageKey);
+  localStorage.removeItem("pcfix-pending-sync-v1");
+}
 
 function startBackgroundServices() {
   reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
@@ -460,7 +457,6 @@ function registerServiceWorker() {
 
 function wireEvents() {
   el.loginForm.addEventListener("submit", loginFromScreen);
-  el.loginOfflineBtn.addEventListener("click", enableOfflineFromLogin);
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
@@ -521,18 +517,12 @@ function wireEvents() {
   document.querySelectorAll("[data-palette]").forEach((button) => {
     button.addEventListener("click", () => applyPreset(button.dataset.palette));
   });
-  el.seedData.addEventListener("click", seedExampleData);
   el.exportInventory.addEventListener("click", exportInventoryCsv);
   el.exportBackup.addEventListener("click", exportBackup);
   el.exportReports.addEventListener("click", exportReportsCsv);
-  el.importBackup.addEventListener("change", importBackup);
-  el.clearData.addEventListener("click", clearData);
   el.apiLogin.addEventListener("click", loginBackend);
   el.apiPull.addEventListener("click", pullBackendData);
-  el.apiPush.addEventListener("click", pushLocalData);
   el.apiDisconnect.addEventListener("click", disconnectBackend);
-  el.offlineMode.addEventListener("change", toggleOfflineMode);
-  el.serverMode.addEventListener("change", toggleServerMode);
   el.createUserBtn.addEventListener("click", createBackendUser);
   el.refreshUsersBtn.addEventListener("click", loadBackendUsers);
   el.closePdf.addEventListener("click", () => el.pdfDialog.close());
@@ -540,29 +530,7 @@ function wireEvents() {
 }
 
 function loadState() {
-  const saved = localStorage.getItem(storageKey);
-  if (!saved) return structuredClone(defaultState);
-  try {
-    const parsed = JSON.parse(saved);
-    const loaded = {
-      ...structuredClone(defaultState),
-      ...parsed,
-      settings: {
-        ...structuredClone(defaultState.settings),
-        ...(parsed.settings || {}),
-        theme: {
-          ...structuredClone(defaultState.settings.theme),
-          ...(parsed.settings?.theme || {})
-        }
-      }
-    };
-    if (isLegacyTheme(loaded.settings.theme) || isPreviousPcfixTheme(loaded.settings.theme)) {
-      loaded.settings.theme = structuredClone(defaultState.settings.theme);
-    }
-    return loaded;
-  } catch {
-    return structuredClone(defaultState);
-  }
+  return structuredClone(defaultState);
 }
 
 function loadApiConfig() {
@@ -575,26 +543,19 @@ function loadApiConfig() {
       token: "",
       user: null,
       serverMode: true,
-      offlineMode: false,
       ...storedConfig,
       token: session.token || "",
-      user: session.user || null
+      user: session.user || null,
+      serverMode: true
     };
   } catch {
-    return { baseUrl: productionApiBaseUrl, email: defaultApiEmail, token: "", user: null, serverMode: true, offlineMode: false };
-  }
-}
-
-function loadSyncQueue() {
-  try {
-    return JSON.parse(localStorage.getItem(pendingSyncKey) || "[]");
-  } catch {
-    return [];
+    return { baseUrl: productionApiBaseUrl, email: defaultApiEmail, token: "", user: null, serverMode: true };
   }
 }
 
 function saveApiConfig() {
-  const { token: _token, user: _user, ...persistentConfig } = apiConfig;
+  apiConfig.serverMode = true;
+  const { token: _token, user: _user, serverMode: _serverMode, ...persistentConfig } = apiConfig;
   localStorage.setItem(apiStorageKey, JSON.stringify(persistentConfig));
   if (apiConfig.token) {
     sessionStorage.setItem(apiSessionKey, JSON.stringify({ token: apiConfig.token, user: apiConfig.user }));
@@ -604,7 +565,7 @@ function saveApiConfig() {
 }
 
 function saveSyncQueue() {
-  localStorage.setItem(pendingSyncKey, JSON.stringify(syncQueue.slice(-50)));
+  syncQueue = syncQueue.slice(-50);
 }
 
 function markPendingSync(reason = "Cambio local") {
@@ -663,9 +624,13 @@ function isPreviousPcfixTheme(theme) {
 }
 
 function persist() {
-  localStorage.setItem(storageKey, JSON.stringify(state));
+  persistLocalOnly();
   markPendingSync();
-  scheduleServerSync();
+  scheduleServerSync(true);
+}
+
+function persistLocalOnly() {
+  sessionStorage.setItem(storageKey, JSON.stringify(state));
 }
 
 function id(prefix) {
@@ -706,7 +671,7 @@ function showView(view) {
     cash: ["Caja", "Pagos, saldos y corte del dia."],
     warranties: ["Garantias", "Reclamos, resoluciones y costos absorbidos."],
     clientPortal: ["Portal cliente", "Consulta publica de seguimiento por folio y telefono."],
-    settings: ["Configuracion", "Datos del negocio, modo online/offline y usuarios."]
+    settings: ["Configuracion", "Datos del negocio, conexion en linea y usuarios."]
   };
   el.pageTitle.textContent = copy[view][0];
   el.pageSubtitle.textContent = copy[view][1];
@@ -3112,6 +3077,63 @@ function upsert(collection, payload) {
   return collection.map((item) => (item.id === payload.id ? payload : item));
 }
 
+function applyBackendRecord(stateKey, previousId, saved) {
+  const backendData = saved?.data || saved;
+  if (!backendData?.id || !Array.isArray(state[stateKey])) return false;
+  let changed = false;
+  const nextId = backendData.id;
+  const existingIndex = state[stateKey].findIndex((item) => item.id === previousId || item.id === nextId);
+  if (existingIndex === -1) {
+    state[stateKey] = [backendData, ...state[stateKey]];
+    changed = true;
+  } else {
+    const previous = state[stateKey][existingIndex];
+    const merged = { ...previous, ...backendData };
+    if (JSON.stringify(previous) !== JSON.stringify(merged)) {
+      state[stateKey] = state[stateKey].map((item, index) => (index === existingIndex ? merged : item));
+      changed = true;
+    }
+  }
+  if (previousId && previousId !== nextId) {
+    remapBackendRecordReferences(stateKey, previousId, nextId);
+    changed = true;
+  }
+  return changed;
+}
+
+function remapBackendRecordReferences(stateKey, previousId, nextId) {
+  if (stateKey === "clients") {
+    state.orders = state.orders.map((order) => order.clientId === previousId ? { ...order, clientId: nextId } : order);
+    state.appointments = state.appointments.map((appointment) => appointment.clientId === previousId ? { ...appointment, clientId: nextId } : appointment);
+  }
+  if (stateKey === "orders") {
+    state.payments = state.payments.map((payment) => payment.orderId === previousId ? { ...payment, orderId: nextId } : payment);
+    state.purchases = state.purchases.map((purchase) => purchase.orderId === previousId ? { ...purchase, orderId: nextId } : purchase);
+    state.appointments = state.appointments.map((appointment) => appointment.orderId === previousId ? { ...appointment, orderId: nextId } : appointment);
+    state.warrantyClaims = state.warrantyClaims.map((claim) => claim.orderId === previousId ? { ...claim, orderId: nextId } : claim);
+  }
+  if (stateKey === "inventory") {
+    state.orders = state.orders.map((order) => ({
+      ...order,
+      parts: (order.parts || []).map((partId) => partId === previousId ? nextId : partId),
+      stockDeductedParts: (order.stockDeductedParts || []).map((partId) => partId === previousId ? nextId : partId),
+      suppliedParts: (order.suppliedParts || []).map((part) => part.inventoryId === previousId ? { ...part, inventoryId: nextId } : part)
+    }));
+    state.inventoryMovements = state.inventoryMovements.map((movement) => movement.itemId === previousId ? { ...movement, itemId: nextId } : movement);
+  }
+  if (stateKey === "suppliers") {
+    state.purchases = state.purchases.map((purchase) => purchase.supplierId === previousId ? { ...purchase, supplierId: nextId } : purchase);
+    state.orders = state.orders.map((order) => order.quoteSupplierId === previousId ? { ...order, quoteSupplierId: nextId } : order);
+  }
+  if (stateKey === "purchases") {
+    state.orders = state.orders.map((order) => ({
+      ...order,
+      suppliedParts: (order.suppliedParts || []).map((part) => part.purchaseId === previousId ? { ...part, purchaseId: nextId } : part)
+    }));
+    state.inventoryMovements = state.inventoryMovements.map((movement) => movement.refId === previousId ? { ...movement, refId: nextId } : movement);
+  }
+}
+
 function nextFolio() {
   const year = new Date().getFullYear();
   const count = state.orders.filter((order) => order.folio?.includes(`${year}`)).length + 1;
@@ -3696,35 +3718,6 @@ function exportBackup() {
   download(`respaldo-pcfix-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(state, null, 2), "application/json");
 }
 
-function importBackup(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const restored = JSON.parse(reader.result);
-      state = { ...structuredClone(defaultState), ...restored };
-      state.settings = {
-        ...structuredClone(defaultState.settings),
-        ...(restored.settings || {}),
-        theme: {
-          ...structuredClone(defaultState.settings.theme),
-          ...(restored.settings?.theme || {})
-        }
-      };
-      persist();
-      applyTheme();
-      hydrateSettingsForm();
-      render();
-      alert("Respaldo restaurado.");
-    } catch {
-      alert("El archivo no parece ser un respaldo valido.");
-    }
-  };
-  reader.readAsText(file);
-  event.target.value = "";
-}
-
 function download(filename, content, type) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -3739,89 +3732,6 @@ function csvCell(value) {
   return `"${String(value ?? "").replaceAll('"', '""')}"`;
 }
 
-function seedExampleData() {
-  if (state.clients.length || state.orders.length || state.inventory.length || state.suppliers.length || state.appointments.length || state.purchases.length) {
-    if (!confirm("Agregar datos de ejemplo sobre los datos actuales?")) return;
-  }
-  const clientA = { id: id("cli"), name: "Mariana Lopez", phone: "9631112233", email: "mariana@example.com", address: "Barrio Centro" };
-  const clientB = { id: id("cli"), name: "Carlos Perez", phone: "9634445566", email: "", address: "Col. Miguel Aleman" };
-  const partA = { id: id("inv"), brand: "Kingston", model: "SSD 480GB", name: "Kingston SSD 480GB", category: "RAM y almacenamiento", stock: 3, min: 1, cost: 520, subdealerPrice: 676, price: 850 };
-  const partB = { id: id("inv"), brand: "Arctic", model: "MX-4", name: "Arctic MX-4", category: "Ventilacion y enfriamiento", stock: 1, min: 3, cost: 80, subdealerPrice: 104, price: 160 };
-  const supplierA = { id: id("sup"), name: "Refacciones Chiapas", contact: "Laura Gomez", phone: "9637778899", email: "ventas@example.com", category: "Pantallas, baterias y flex", notes: "Entrega local y cotizacion por WhatsApp." };
-  const supplierB = { id: id("sup"), name: "Tech Parts MX", contact: "Mesa de ventas", phone: "9612223344", email: "", category: "Laptops y almacenamiento", notes: "Consultar disponibilidad antes de confirmar." };
-  state.clients.push(clientA, clientB);
-  state.inventory.push(partA, partB);
-  state.suppliers.push(supplierA, supplierB);
-  const sampleOrder = {
-    id: id("ord"),
-    folio: nextFolio(),
-    clientId: clientA.id,
-    device: "Laptop Lenovo Ideapad",
-    technician: "Tecnico PCFix",
-    serial: "LEN-2045",
-    status: "Diagnostico",
-    deposit: 150,
-    total: 950,
-    issue: "No enciende y se calienta al conectar cargador.",
-    notes: "Pendiente de pruebas de fuente y limpieza interna.",
-    accessories: "Cargador original y funda.",
-    physicalState: "Rayones leves en tapa inferior. Sin indicios visibles de humedad.",
-    passcode: "Autorizada por cliente",
-    evidence: "Foto frontal, posterior y etiqueta de serie registradas en recepcion.",
-    warrantyDays: 90,
-    warrantyTerms: defaultWarrantyTerms,
-    approved: true,
-    parts: [partB.id],
-    quotePartName: "Centro de carga Lenovo Ideapad",
-    quoteSupplierId: supplierB.id,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  state.orders.push(sampleOrder);
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  state.appointments.push({
-    id: id("apt"),
-    clientId: clientA.id,
-    orderId: sampleOrder.id,
-    date: tomorrow.toISOString().slice(0, 10),
-    time: "11:30",
-    type: "Diagnostico",
-    notes: "Confirmar costo final y tiempo de entrega.",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  });
-  state.purchases.push({
-    id: id("pur"),
-    folio: nextPurchaseFolio(),
-    supplierId: supplierB.id,
-    orderId: sampleOrder.id,
-    part: "Centro de carga Lenovo Ideapad",
-    qty: 1,
-    cost: 280,
-    items: [
-      { id: id("pitem"), part: "Centro de carga Lenovo Ideapad", qty: 1, cost: 280 },
-      { id: id("pitem"), part: "Flex de encendido Lenovo Ideapad", qty: 1, cost: 160 }
-    ],
-    status: "Cotizando",
-    notes: "Confirmar compatibilidad antes de pedir.",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  });
-  persist();
-  hydrateSettingsForm();
-  render();
-}
-
-function clearData() {
-  if (!confirm("Borrar todos los datos guardados en este navegador?")) return;
-  state = structuredClone(defaultState);
-  persist();
-  applyTheme();
-  hydrateSettingsForm();
-  render();
-}
-
 function hydrateApiForm() {
   el.apiBaseUrl.value = apiConfig.baseUrl || productionApiBaseUrl;
   el.apiEmail.value = apiConfig.email || defaultApiEmail;
@@ -3829,22 +3739,16 @@ function hydrateApiForm() {
   el.loginApiBaseUrl.value = apiConfig.baseUrl || productionApiBaseUrl;
   el.loginEmail.value = apiConfig.email || defaultApiEmail;
   el.loginPassword.value = "";
-  el.offlineMode.checked = Boolean(apiConfig.offlineMode);
-  el.serverMode.checked = Boolean(apiConfig.serverMode);
   updateApiStatus();
 }
 
 function updateApiStatus() {
-  if (apiConfig.offlineMode) {
-    el.apiStatus.textContent = "Offline";
-    return;
-  }
   if (!apiConfig.token) {
     el.apiStatus.textContent = "Requiere login";
     return;
   }
   if (!navigator.onLine) {
-    el.apiStatus.textContent = `Sin conexion: ${syncQueue.length} pendiente(s)`;
+    el.apiStatus.textContent = "Sin conexion al servidor";
     return;
   }
   if (isSyncingNow) {
@@ -3855,18 +3759,13 @@ function updateApiStatus() {
     el.apiStatus.textContent = `Pendiente: ${syncQueue.length} cambio(s)`;
     return;
   }
-  el.apiStatus.textContent = `${apiConfig.serverMode ? "Servidor" : "Conectado"}: guardado`;
+  el.apiStatus.textContent = "Servidor: guardado";
 }
 
 function enforceAccessMode() {
   const isPublicPortal = document.body.classList.contains("public-portal-mode");
   if (isPublicPortal) {
     hideLoginScreen();
-    return;
-  }
-  if (apiConfig.offlineMode) {
-    hideLoginScreen();
-    updateApiStatus();
     return;
   }
   if (!apiConfig.token) {
@@ -3893,7 +3792,6 @@ async function loginFromScreen(event) {
   try {
     apiConfig.baseUrl = el.loginApiBaseUrl.value.trim().replace(/\/$/, "");
     apiConfig.email = el.loginEmail.value.trim();
-    apiConfig.offlineMode = false;
     apiConfig.serverMode = true;
     await authenticateBackend(apiConfig.baseUrl, apiConfig.email, el.loginPassword.value);
     saveApiConfig();
@@ -3907,22 +3805,10 @@ async function loginFromScreen(event) {
   }
 }
 
-function enableOfflineFromLogin() {
-  apiConfig.offlineMode = true;
-  apiConfig.serverMode = false;
-  apiConfig.token = "";
-  apiConfig.user = null;
-  saveApiConfig();
-  hydrateApiForm();
-  hideLoginScreen();
-  updateApiStatus();
-}
-
 async function loginBackend() {
   try {
     apiConfig.baseUrl = el.apiBaseUrl.value.trim().replace(/\/$/, "");
     apiConfig.email = el.apiEmail.value.trim();
-    apiConfig.offlineMode = false;
     apiConfig.serverMode = true;
     await authenticateBackend(apiConfig.baseUrl, apiConfig.email, el.apiPassword.value);
     saveApiConfig();
@@ -3958,53 +3844,14 @@ async function authenticateBackend(baseUrl, email, password) {
 function disconnectBackend() {
   apiConfig.token = "";
   apiConfig.user = null;
-  apiConfig.serverMode = false;
-  apiConfig.offlineMode = false;
+  apiConfig.serverMode = true;
   saveApiConfig();
   hydrateApiForm();
   updateApiStatus();
   enforceAccessMode();
-}
-
-function toggleOfflineMode() {
-  apiConfig.offlineMode = el.offlineMode.checked;
-  if (apiConfig.offlineMode) {
-    apiConfig.token = "";
-    apiConfig.user = null;
-    apiConfig.serverMode = false;
-    el.serverMode.checked = false;
-    alert("Modo offline activo. Los cambios se guardaran en este navegador hasta volver a conectar.");
-  } else {
-    alert("Modo online activo. Inicia sesion para sincronizar con el servidor.");
-  }
-  saveApiConfig();
-  hydrateApiForm();
-  updateApiStatus();
-  enforceAccessMode();
-}
-
-function toggleServerMode() {
-  if (apiConfig.offlineMode) {
-    el.serverMode.checked = false;
-    alert("Desactiva el modo offline para usar sincronizacion con servidor.");
-    return;
-  }
-  if (el.serverMode.checked && !apiConfig.token) {
-    el.serverMode.checked = false;
-    alert("Primero conecta al backend.");
-    return;
-  }
-  apiConfig.serverMode = el.serverMode.checked;
-  saveApiConfig();
-  updateApiStatus();
-  if (apiConfig.serverMode) {
-    markPendingSync("Modo servidor activado");
-    scheduleServerSync(true);
-  }
 }
 
 async function apiRequest(path, options = {}) {
-  if (apiConfig.offlineMode) throw new Error("Modo offline activo.");
   if (!apiConfig.token) throw new Error("Primero conecta al backend.");
   const response = await fetch(`${apiConfig.baseUrl}${path}`, {
     ...options,
@@ -4044,23 +3891,35 @@ async function pushLocalData(confirmFirst = true, options = {}) {
     const ok = confirm("La copia local no tiene clientes, ordenes ni inventario. Subirla podria dejar el backend vacio. Deseas continuar?");
     if (!ok) return false;
   }
-  if (confirmFirst && !confirm("Subir datos locales al backend? Los registros con el mismo ID se actualizaran.")) return;
+  if (confirmFirst && !confirm("Enviar cambios actuales al servidor? Los registros con el mismo ID se actualizaran.")) return;
   try {
-    await apiRequest("/api/records/settings", {
+    let changedByBackend = false;
+    const savedSettings = await apiRequest("/api/records/settings", {
       method: "POST",
-      body: JSON.stringify({ id: "settings", data: { id: "settings", ...state.settings }, detail: "Sincronizacion local" })
+          body: JSON.stringify({ id: "settings", data: { id: "settings", ...state.settings }, detail: "Sincronizacion en linea" })
     });
+    if (savedSettings?.data) {
+      const { id: _id, ...settings } = savedSettings.data;
+      state.settings = {
+        ...state.settings,
+        ...settings,
+        theme: { ...state.settings.theme, ...(settings.theme || {}) }
+      };
+      changedByBackend = true;
+    }
     for (const [stateKey, apiType, isSingleton] of syncCollections) {
       if (isSingleton) continue;
       for (const record of state[stateKey] || []) {
-        await apiRequest(`/api/records/${apiType}`, {
+        const saved = await apiRequest(`/api/records/${apiType}`, {
           method: "POST",
-          body: JSON.stringify({ id: record.id, data: record, detail: "Sincronizacion local" })
+          body: JSON.stringify({ id: record.id, data: record, detail: "Sincronizacion en linea" })
         });
+        if (applyBackendRecord(stateKey, record.id, saved)) changedByBackend = true;
       }
     }
+    if (changedByBackend) persistLocalOnly();
     clearPendingSync();
-    if (!options.silent) alert("Datos locales subidos al backend.");
+    if (!options.silent) alert("Cambios enviados al servidor.");
     return true;
   } catch (error) {
     if (!options.silent) alert(`No se pudo subir: ${error.message}`);
@@ -4070,13 +3929,13 @@ async function pushLocalData(confirmFirst = true, options = {}) {
 }
 
 function scheduleServerSync(immediate = false) {
-  if (apiConfig.offlineMode || !apiConfig.serverMode || !apiConfig.token || isPullingFromBackend) return;
+  if (!apiConfig.token || isPullingFromBackend) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(flushSyncQueue, immediate ? 10 : 1200);
 }
 
 async function flushSyncQueue() {
-  if (apiConfig.offlineMode || !apiConfig.serverMode || !apiConfig.token || isPullingFromBackend || isSyncingNow || !syncQueue.length) return;
+  if (!apiConfig.token || isPullingFromBackend || isSyncingNow || !syncQueue.length) return;
   if (!navigator.onLine) {
     updateApiStatus();
     return;
@@ -4150,9 +4009,8 @@ async function deactivateBackendUser(userId) {
 }
 
 async function pullBackendData(options = {}) {
-  if (!options.silent && !confirm("Descargar datos del backend y reemplazar los datos locales actuales?")) return;
+  if (!options.silent && !confirm("Actualizar datos desde el servidor?")) return;
   try {
-    if (!isLocalStateEmpty()) saveLocalSnapshot("Antes de descargar backend");
     const nextState = structuredClone(defaultState);
     const settingsRows = await apiRequest("/api/records/settings");
     if (settingsRows[0]?.data) {
@@ -4168,19 +4026,15 @@ async function pullBackendData(options = {}) {
       const rows = await apiRequest(`/api/records/${apiType}`);
       nextState[stateKey] = rows.map((row) => row.data || row);
     }
-    if (countBusinessRecords(nextState) === 0 && !isLocalStateEmpty()) {
-      if (!options.silent) alert("El backend no devolvio registros. No se reemplazaron tus datos locales.");
-      return false;
-    }
     isPullingFromBackend = true;
     state = nextState;
     reconcileReceivedPurchasesToOrders({ renderAfter: false, persistAfter: false });
-    persist();
+    persistLocalOnly();
     isPullingFromBackend = false;
     applyTheme();
     hydrateSettingsForm();
     render();
-    if (!options.silent) alert("Datos descargados del backend.");
+    if (!options.silent) alert("Datos actualizados desde el servidor.");
     return true;
   } catch (error) {
     if (!options.silent) alert(`No se pudo descargar: ${error.message}`);
@@ -4189,14 +4043,14 @@ async function pullBackendData(options = {}) {
 }
 
 async function autoRecoverFromBackendIfEmpty() {
-  if (apiConfig.offlineMode || !isLocalStateEmpty() || !apiConfig.token || !apiConfig.baseUrl || !navigator.onLine) return;
+  if (!isLocalStateEmpty() || !apiConfig.token || !apiConfig.baseUrl || !navigator.onLine) return;
   el.apiStatus.textContent = "Recuperando backend...";
   await pullBackendData({ silent: true });
   updateApiStatus();
 }
 
 async function cloudStartupSync() {
-  if (apiConfig.offlineMode || document.body.classList.contains("public-portal-mode") || !navigator.onLine || !apiConfig.token) return;
+  if (document.body.classList.contains("public-portal-mode") || !navigator.onLine || !apiConfig.token) return;
   try {
     apiConfig.baseUrl = (apiConfig.baseUrl || productionApiBaseUrl).replace(/\/$/, "");
     apiConfig.email = apiConfig.email || defaultApiEmail;
@@ -4204,13 +4058,9 @@ async function cloudStartupSync() {
     el.apiStatus.textContent = "Conectando nube...";
     saveApiConfig();
     hydrateApiForm();
-    if (syncQueue.length) {
-      await pushLocalData(false, { silent: true, allowEmpty: true });
-    }
     el.apiStatus.textContent = "Descargando nube...";
     await pullBackendData({ silent: true });
     updateApiStatus();
-    scheduleServerSync(true);
   } catch (error) {
     el.apiStatus.textContent = "Nube no conectada";
   }

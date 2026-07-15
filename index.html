@@ -25,7 +25,6 @@
         <label>Email<input id="loginEmail" type="email" value="admin@pcfix.local" autocomplete="username"></label>
         <label>Password<input id="loginPassword" type="password" autocomplete="current-password"></label>
         <button class="btn primary" type="submit">Entrar</button>
-        <button class="btn ghost" type="button" id="loginOfflineBtn">Trabajar offline</button>
       </form>
     </section>
 
@@ -687,33 +686,23 @@
                 <h2>Herramientas administrativas</h2>
               </div>
               <div class="admin-actions">
-                <button class="btn ghost" id="seedData">Cargar datos de ejemplo</button>
                 <button class="btn ghost" id="exportBackup">Respaldar datos</button>
                 <button class="btn ghost" id="exportReports">Exportar reportes</button>
-                <label class="file-action">Restaurar respaldo<input id="importBackup" type="file" accept="application/json"></label>
-                <button class="btn danger" id="clearData">Borrar datos locales</button>
               </div>
             </section>
             <section class="panel">
               <div class="panel-header">
-                <h2>Modo de trabajo</h2>
+                <h2>Conexion en linea</h2>
                 <span id="apiStatus" class="count-pill">Local</span>
               </div>
-              <label class="switch-line">
-                <input id="offlineMode" type="checkbox">
-                <span></span>
-                <strong>Trabajar offline</strong>
-              </label>
               <div class="backend-grid">
                 <label>URL del servidor<input id="apiBaseUrl" value="https://pcfix-backend.onrender.com"></label>
                 <label>Email<input id="apiEmail" type="email" value="admin@pcfix.local"></label>
                 <label>Password<input id="apiPassword" type="password"></label>
               </div>
-              <label class="checkbox-line"><input id="serverMode" type="checkbox"> Modo servidor automatico</label>
               <div class="admin-actions">
                 <button class="btn primary" id="apiLogin" type="button">Conectar</button>
-                <button class="btn ghost" id="apiPull" type="button">Descargar backend</button>
-                <button class="btn ghost" id="apiPush" type="button">Subir datos locales</button>
+                <button class="btn ghost" id="apiPull" type="button">Actualizar desde servidor</button>
                 <button class="btn danger" id="apiDisconnect" type="button">Desconectar</button>
               </div>
             </section>

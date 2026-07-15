@@ -813,7 +813,18 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
   try {
     await syncNormalizedRecord(type, data, Boolean(record.archived), timestamp, timestamp);
   } catch (error) {
-    if (error?.code !== "23505") throw error;
+    if (error?.code !== "23505") {
+      console.error(`Error guardando ${type}`, {
+        code: error?.code,
+        detail: error?.detail,
+        message: error?.message,
+        recordId
+      });
+      return res.status(500).json({
+        error: `No se pudo guardar ${type}: ${error?.detail || error?.message || "Error interno"}`,
+        code: error?.code || "save_failed"
+      });
+    }
     const retry = await prepareRecordForSave(type, appendConsecutive(recordId, 2), data);
     await syncNormalizedRecord(type, retry.data, Boolean(record.archived), timestamp, timestamp);
     await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${recordId}`);
