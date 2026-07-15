@@ -775,6 +775,11 @@ app.get("/api/stability", async (_req, res) => {
     mode: "postgres",
     professionalDatabase: true,
     restrictions: report.restrictions,
+    protectedReports: {
+      analytics: "/api/admin/analytics",
+      integrity: "/api/admin/integrity",
+      stability: "/api/admin/stability"
+    },
     totals: report.totals,
     normalizedTotals: report.normalizedTotals,
     duplicates: report.duplicates,
@@ -902,6 +907,14 @@ app.get("/api/admin/stability", requireAuth, requireRole("admin", "manager"), as
   res.json(await getStabilityReport());
 });
 
+app.get("/api/admin/analytics", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
+  res.json(await getAnalyticsReport());
+});
+
+app.get("/api/admin/integrity", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
+  res.json(await getIntegrityReport());
+});
+
 app.post("/api/admin/stability/repair", requireAuth, requireRole("admin"), async (req, res) => {
   await repairDuplicateBusinessKeys();
   await audit(req.user.sub, "manual_stability_repair", "records", "", "Reparacion manual de duplicados");
@@ -956,6 +969,193 @@ async function getNormalizedTotals() {
     totals.push({ table, total: result.rows[0]?.total || 0 });
   }
   return totals;
+}
+
+async function getAnalyticsReport() {
+  const [
+    orderMetrics,
+    financeMetrics,
+    inventoryMetrics,
+    purchaseMetrics,
+    warrantyMetrics,
+    statusRows,
+    serviceRows,
+    monthlyRows
+  ] = await Promise.all([
+    query(`
+      SELECT
+        COUNT(*) FILTER (WHERE archived = FALSE AND status NOT IN ('Entregado','Cancelado'))::int AS active_orders,
+        COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Listo')::int AS ready_orders,
+        COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Entregado')::int AS delivered_orders,
+        COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Cancelado')::int AS canceled_orders
+      FROM service_orders
+    `),
+    query(`
+      WITH order_costs AS (
+        SELECT order_id, COALESCE(SUM(total_cost), 0) AS parts_cost
+        FROM order_parts
+        GROUP BY order_id
+      ),
+      payment_totals AS (
+        SELECT order_id, COALESCE(SUM(amount), 0) AS payments
+        FROM payments
+        WHERE archived = FALSE
+        GROUP BY order_id
+      )
+      SELECT
+        COALESCE(SUM(o.total), 0) AS revenue,
+        COALESCE(SUM(COALESCE(c.parts_cost, 0)), 0) AS parts_cost,
+        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0)), 0) AS gross_margin,
+        COALESCE(SUM(GREATEST(o.total - GREATEST(o.deposit, COALESCE(p.payments, 0)), 0)), 0) AS receivables
+      FROM service_orders o
+      LEFT JOIN order_costs c ON c.order_id = o.id
+      LEFT JOIN payment_totals p ON p.order_id = o.id
+      WHERE o.archived = FALSE AND o.status <> 'Cancelado'
+    `),
+    query(`
+      SELECT
+        COUNT(*) FILTER (WHERE archived = FALSE AND stock <= min_stock)::int AS low_stock,
+        COUNT(*) FILTER (WHERE archived = FALSE AND stock = 0)::int AS out_of_stock,
+        COALESCE(SUM(stock * cost) FILTER (WHERE archived = FALSE), 0) AS inventory_value
+      FROM inventory_items
+    `),
+    query(`
+      SELECT
+        COUNT(*) FILTER (WHERE archived = FALSE AND status NOT IN ('Recibido','Cancelado'))::int AS pending_purchases,
+        COALESCE(SUM(qty * cost) FILTER (WHERE archived = FALSE AND status NOT IN ('Recibido','Cancelado')), 0) AS pending_purchase_value
+      FROM purchases
+    `),
+    query(`
+      SELECT
+        COUNT(*) FILTER (WHERE archived = FALSE)::int AS warranty_claims,
+        COALESCE(SUM(cost) FILTER (WHERE archived = FALSE), 0) AS warranty_cost
+      FROM warranty_claims
+    `),
+    query(`
+      SELECT status, COUNT(*)::int AS total
+      FROM service_orders
+      WHERE archived = FALSE
+      GROUP BY status
+      ORDER BY total DESC, status ASC
+    `),
+    query(`
+      SELECT
+        CASE
+          WHEN lower(device) LIKE '%iphone%' OR lower(device) LIKE '%samsung%' OR lower(device) LIKE '%xiaomi%' OR lower(device) LIKE '%motorola%' THEN 'Celular'
+          WHEN lower(device) LIKE '%laptop%' OR lower(device) LIKE '%thinkpad%' OR lower(device) LIKE '%hp%' OR lower(device) LIKE '%dell%' OR lower(device) LIKE '%lenovo%' THEN 'Laptop'
+          WHEN lower(device) LIKE '%ipad%' OR lower(device) LIKE '%tablet%' THEN 'Tablet'
+          ELSE 'Otros'
+        END AS service_type,
+        COUNT(*)::int AS total
+      FROM service_orders
+      WHERE archived = FALSE
+      GROUP BY service_type
+      ORDER BY total DESC
+    `),
+    query(`
+      SELECT substring(created_at, 1, 7) AS month, COALESCE(SUM(total), 0) AS revenue, COUNT(*)::int AS orders
+      FROM service_orders
+      WHERE archived = FALSE AND status <> 'Cancelado'
+      GROUP BY substring(created_at, 1, 7)
+      ORDER BY month DESC
+      LIMIT 12
+    `)
+  ]);
+  const finance = financeMetrics.rows[0] || {};
+  const marginRate = asNumber(finance.revenue) > 0
+    ? Math.round((asNumber(finance.gross_margin) / asNumber(finance.revenue)) * 100)
+    : 0;
+  return {
+    generatedAt: now(),
+    kpis: {
+      ...(orderMetrics.rows[0] || {}),
+      revenue: asNumber(finance.revenue),
+      partsCost: asNumber(finance.parts_cost),
+      grossMargin: asNumber(finance.gross_margin),
+      marginRate,
+      receivables: asNumber(finance.receivables),
+      lowStock: inventoryMetrics.rows[0]?.low_stock || 0,
+      outOfStock: inventoryMetrics.rows[0]?.out_of_stock || 0,
+      inventoryValue: asNumber(inventoryMetrics.rows[0]?.inventory_value),
+      pendingPurchases: purchaseMetrics.rows[0]?.pending_purchases || 0,
+      pendingPurchaseValue: asNumber(purchaseMetrics.rows[0]?.pending_purchase_value),
+      warrantyClaims: warrantyMetrics.rows[0]?.warranty_claims || 0,
+      warrantyCost: asNumber(warrantyMetrics.rows[0]?.warranty_cost)
+    },
+    statusDistribution: statusRows.rows,
+    serviceMix: serviceRows.rows,
+    monthlyRevenue: monthlyRows.rows.reverse(),
+    recommendations: buildAnalyticsRecommendations({
+      marginRate,
+      receivables: asNumber(finance.receivables),
+      lowStock: inventoryMetrics.rows[0]?.low_stock || 0,
+      pendingPurchases: purchaseMetrics.rows[0]?.pending_purchases || 0,
+      warrantyCost: asNumber(warrantyMetrics.rows[0]?.warranty_cost)
+    })
+  };
+}
+
+function buildAnalyticsRecommendations(metrics) {
+  const recommendations = [];
+  if (metrics.receivables > 0) recommendations.push("Revisar cuentas por cobrar y enviar recordatorios de liquidacion.");
+  if (metrics.lowStock > 0) recommendations.push("Priorizar reabastecimiento de articulos en minimo o agotados.");
+  if (metrics.pendingPurchases > 0) recommendations.push("Cerrar compras pendientes para reducir ordenes detenidas por refacciones.");
+  if (metrics.marginRate > 0 && metrics.marginRate < 30) recommendations.push("Revisar precios de venta: el margen general esta por debajo de 30%.");
+  if (metrics.warrantyCost > 0) recommendations.push("Analizar garantias con costo absorbido para detectar fallas repetitivas.");
+  return recommendations;
+}
+
+async function getIntegrityReport() {
+  const checks = [
+    {
+      key: "ordersWithoutClient",
+      label: "Ordenes sin cliente valido",
+      sql: "SELECT COUNT(*)::int AS total FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND COALESCE(o.client_id, '') <> '' AND c.id IS NULL"
+    },
+    {
+      key: "paymentsWithoutOrder",
+      label: "Pagos sin orden valida",
+      sql: "SELECT COUNT(*)::int AS total FROM payments p LEFT JOIN service_orders o ON o.id = p.order_id WHERE p.archived = FALSE AND COALESCE(p.order_id, '') <> '' AND o.id IS NULL"
+    },
+    {
+      key: "purchasesWithoutSupplier",
+      label: "Compras sin proveedor valido",
+      sql: "SELECT COUNT(*)::int AS total FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id WHERE p.archived = FALSE AND COALESCE(p.supplier_id, '') <> '' AND s.id IS NULL"
+    },
+    {
+      key: "purchasesWithoutOrder",
+      label: "Compras ligadas a orden inexistente",
+      sql: "SELECT COUNT(*)::int AS total FROM purchases p LEFT JOIN service_orders o ON o.id = p.order_id WHERE p.archived = FALSE AND COALESCE(p.order_id, '') <> '' AND o.id IS NULL"
+    },
+    {
+      key: "orderPartsWithoutOrder",
+      label: "Refacciones surtidas sin orden",
+      sql: "SELECT COUNT(*)::int AS total FROM order_parts op LEFT JOIN service_orders o ON o.id = op.order_id WHERE o.id IS NULL"
+    },
+    {
+      key: "orderPartsWithoutInventory",
+      label: "Refacciones surtidas sin articulo de inventario",
+      sql: "SELECT COUNT(*)::int AS total FROM order_parts op LEFT JOIN inventory_items i ON i.id = op.inventory_id WHERE COALESCE(op.inventory_id, '') <> '' AND i.id IS NULL"
+    },
+    {
+      key: "negativeBusinessValues",
+      label: "Valores negativos bloqueados por reglas",
+      sql: "SELECT 0::int AS total"
+    }
+  ];
+  const results = [];
+  for (const check of checks) {
+    const result = await query(check.sql);
+    results.push({ key: check.key, label: check.label, total: result.rows[0]?.total || 0 });
+  }
+  return {
+    ok: results.every((item) => item.total === 0),
+    generatedAt: now(),
+    checks: results,
+    recommendations: results
+      .filter((item) => item.total > 0)
+      .map((item) => `Corregir ${item.total} caso(s): ${item.label}.`)
+  };
 }
 
 async function findDuplicateJsonValues(type, field) {

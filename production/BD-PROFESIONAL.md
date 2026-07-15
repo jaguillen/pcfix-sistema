@@ -66,11 +66,40 @@ Ruta protegida con usuario `admin` o `manager`:
 GET /api/admin/stability
 ```
 
+Reportes protegidos adicionales:
+
+```text
+GET /api/admin/analytics
+GET /api/admin/integrity
+```
+
 La respuesta incluye:
 
 - duplicados detectados;
 - totales por tipo en `records`;
 - totales por tabla profesional.
+
+`/api/admin/analytics` calcula desde tablas SQL:
+
+- ingresos;
+- costo de refacciones;
+- margen bruto;
+- cuentas por cobrar;
+- stock bajo;
+- compras pendientes;
+- costo de garantias;
+- mezcla de servicios;
+- ingresos mensuales;
+- recomendaciones operativas.
+
+`/api/admin/integrity` revisa:
+
+- ordenes sin cliente valido;
+- pagos sin orden;
+- compras sin proveedor;
+- compras ligadas a orden inexistente;
+- refacciones surtidas sin orden;
+- refacciones surtidas sin articulo de inventario.
 
 ## Importante
 
