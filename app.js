@@ -250,6 +250,7 @@ const ids = [
   "orderId",
   "orderClient",
   "orderDevice",
+  "orderDeviceModels",
   "orderTechnician",
   "orderSerial",
   "orderStatus",
@@ -474,6 +475,9 @@ function wireEvents() {
   el.clientForm.addEventListener("submit", saveClient);
   el.resetClientForm.addEventListener("click", resetClientForm);
   el.orderForm.addEventListener("submit", saveOrder);
+  el.orderDevice.addEventListener("input", updateOrderPartContext);
+  el.orderIssue.addEventListener("input", updateOrderPartSuggestion);
+  el.orderNotes.addEventListener("input", updateOrderPartSuggestion);
   el.resetOrderForm.addEventListener("click", resetOrderForm);
   el.cancelOrderForm.addEventListener("click", hideOrderForm);
   el.newOrderInlineBtn.addEventListener("click", showNewOrderForm);
@@ -1213,6 +1217,7 @@ function applyQuickIssue() {
     "Problema de software": "Cliente reporta problema de software. Revisar sistema, drivers, virus, respaldos y licencias."
   };
   el.orderIssue.value = templates[value] || value;
+  updateOrderPartSuggestion();
 }
 
 function renderPaymentSelectors() {
@@ -1440,10 +1445,136 @@ function renderOrderSelectors() {
     ? clients.map((client) => `<option value="${client.id}">${escapeHtml(client.name)} - ${escapeHtml(client.phone)}</option>`).join("")
     : `<option value="">Registra un cliente primero</option>`;
 
-  el.orderPartOptions.innerHTML = state.inventory.filter((item) => !item.archived).map((item) =>
-    `<option value="${escapeAttr(orderPartOptionLabel(item))}"></option>`
-  ).join("");
+  renderOrderDeviceModels();
+  renderCompatibleOrderPartOptions();
   renderSelectedOrderParts();
+}
+
+function renderOrderDeviceModels() {
+  const catalogDevices = Object.entries(commercialDeviceCatalog)
+    .flatMap(([brand, models]) => models.map((model) => `${brand} ${model}`));
+  const savedOrderDevices = state.orders
+    .filter((order) => !order.archived)
+    .map((order) => order.device)
+    .filter(Boolean);
+  const inventoryDevices = state.inventory
+    .filter((item) => !item.archived)
+    .map((item) => displayInventoryName(item))
+    .filter(Boolean);
+  const devices = [...new Set([...catalogDevices, ...savedOrderDevices, ...inventoryDevices])]
+    .sort((a, b) => a.localeCompare(b, "es"));
+  el.orderDeviceModels.innerHTML = devices
+    .map((device) => `<option value="${escapeAttr(device)}"></option>`)
+    .join("");
+}
+
+function renderCompatibleOrderPartOptions() {
+  const compatibleParts = getCompatibleInventoryForOrder();
+  el.orderPartOptions.innerHTML = compatibleParts
+    .map((item) => `<option value="${escapeAttr(orderPartOptionLabel(item))}"></option>`)
+    .join("");
+}
+
+function updateOrderPartContext() {
+  renderCompatibleOrderPartOptions();
+  setSelectedOrderParts(getSelectedOrderPartIds().filter((partId) => {
+    const item = state.inventory.find((entry) => entry.id === partId);
+    return item && isInventoryCompatibleWithOrderDevice(item);
+  }));
+  updateOrderPartSuggestion();
+}
+
+function updateOrderPartSuggestion() {
+  const device = el.orderDevice.value.trim();
+  if (!device) return;
+  const compatibleParts = getCompatibleInventoryForOrder();
+  if (compatibleParts.length) return;
+  const suggestion = suggestPartForOrder();
+  if (!suggestion) return;
+  applyAutoSuggestion(el.quotePartName, suggestion);
+  applyAutoSuggestion(el.purchasePart, suggestion);
+  if (el.purchaseQty && !Number(el.purchaseQty.value || 0)) el.purchaseQty.value = 1;
+  if (el.purchaseOrderLink && el.orderId.value) el.purchaseOrderLink.value = el.orderId.value;
+}
+
+function applyAutoSuggestion(input, suggestion) {
+  if (!input) return;
+  const previous = input.dataset.autoSuggestion || "";
+  if (!input.value.trim() || input.value.trim() === previous) {
+    input.value = suggestion;
+    input.dataset.autoSuggestion = suggestion;
+  }
+}
+
+function getCompatibleInventoryForOrder() {
+  const available = state.inventory.filter((item) => !item.archived);
+  const profile = getOrderDeviceProfile();
+  if (!profile.model && !profile.brand) return available;
+  const compatible = available.filter(isInventoryCompatibleWithOrderDevice);
+  return compatible;
+}
+
+function isInventoryCompatibleWithOrderDevice(item) {
+  const profile = getOrderDeviceProfile();
+  if (!profile.model && !profile.brand) return true;
+  const itemText = normalizeSearchText([displayInventoryName(item), item.name, item.brand, item.model, item.category].filter(Boolean).join(" "));
+  const modelText = normalizeSearchText(profile.model);
+  const fullDeviceText = normalizeSearchText(profile.full);
+  const brandText = normalizeSearchText(profile.brand);
+  const itemModelText = normalizeSearchText(item.model);
+  if (modelText && (itemText.includes(modelText) || (itemModelText && fullDeviceText.includes(itemModelText)))) return true;
+  if (brandText && normalizeSearchText(item.brand) === brandText && !modelText) return true;
+  return false;
+}
+
+function getOrderDeviceProfile() {
+  return parseDeviceText(el.orderDevice?.value || "");
+}
+
+function parseDeviceText(value) {
+  const full = String(value || "").trim();
+  const normalized = normalizeSearchText(full);
+  if (!normalized) return { brand: "", model: "", full: "" };
+  for (const [brand, models] of Object.entries(commercialDeviceCatalog)) {
+    const brandNorm = normalizeSearchText(brand);
+    if (normalized.startsWith(brandNorm)) {
+      return { brand, model: full.slice(brand.length).trim(), full };
+    }
+    const matchedModel = models.find((model) => normalized.includes(normalizeSearchText(model)));
+    if (matchedModel) return { brand, model: matchedModel, full };
+  }
+  const [brand, ...model] = full.split(" ");
+  return { brand: brand || "", model: model.join(" "), full };
+}
+
+function suggestPartForOrder() {
+  const device = el.orderDevice.value.trim();
+  const text = normalizeSearchText([el.quickIssue.value, el.orderIssue.value, el.orderNotes.value].filter(Boolean).join(" "));
+  if (!device || !text) return "";
+  const partType = inferPartTypeFromDiagnosis(text, device);
+  return partType ? `${partType} ${device}` : `Refaccion ${device}`;
+}
+
+function inferPartTypeFromDiagnosis(text, device) {
+  const isLaptop = /laptop|thinkpad|ideapad|xps|inspiron|latitude|pavilion|spectre|envy|victus|omen|zenbook|vivobook|aspire|swift|nitro|predator|matebook|magicbook|macbook/.test(normalizeSearchText(device));
+  const rules = [
+    { keys: ["pantalla", "display", "tactil", "imagen", "vidrio"], phone: "Pantalla", laptop: "Pantalla" },
+    { keys: ["no carga", "carga", "centro de carga", "conector", "puerto"], phone: "Centro de carga", laptop: "Jack de carga" },
+    { keys: ["bateria", "pila", "se apaga", "descarga"], phone: "Bateria", laptop: "Bateria" },
+    { keys: ["teclado", "tecla"], phone: "Flex teclado", laptop: "Teclado" },
+    { keys: ["camara"], phone: "Camara", laptop: "Camara" },
+    { keys: ["bocina", "audio", "altavoz"], phone: "Bocina", laptop: "Bocina" },
+    { keys: ["microfono"], phone: "Microfono", laptop: "Microfono" },
+    { keys: ["flex"], phone: "Flex", laptop: "Flex" },
+    { keys: ["disco", "ssd", "almacenamiento", "lento"], phone: "Memoria / almacenamiento", laptop: "SSD" },
+    { keys: ["ram", "memoria"], phone: "Memoria", laptop: "Memoria RAM" },
+    { keys: ["temperatura", "calienta", "ventilador"], phone: "Disipador", laptop: "Ventilador" },
+    { keys: ["bisagra"], phone: "Marco", laptop: "Bisagra" },
+    { keys: ["tarjeta madre", "placa", "no enciende"], phone: "Revision de placa", laptop: "Revision de motherboard" }
+  ];
+  const rule = rules.find((item) => item.keys.some((key) => text.includes(normalizeSearchText(key))));
+  if (!rule) return "";
+  return isLaptop ? rule.laptop : rule.phone;
 }
 
 function renderSupplierSelectors() {
@@ -1579,7 +1710,8 @@ function addOrderPartFromSearch() {
   if (!text) return;
   const item = findInventoryItemFromPartSearch(text);
   if (!item) {
-    alert("Selecciona una refaccion existente del inventario.");
+    updateOrderPartSuggestion();
+    alert("No encontre una refaccion compatible para ese modelo. Deje una sugerencia lista en Cotizacion automatica y Compras.");
     return;
   }
   setSelectedOrderParts([...getSelectedOrderPartIds(), item.id]);
@@ -1588,9 +1720,10 @@ function addOrderPartFromSearch() {
 
 function findInventoryItemFromPartSearch(text) {
   const normalized = normalizeSearchText(text);
-  return state.inventory.find((item) => normalizeSearchText(orderPartOptionLabel(item)) === normalized)
-    || state.inventory.find((item) => normalizeSearchText(displayInventoryName(item)) === normalized)
-    || state.inventory.find((item) => normalizeSearchText(orderPartOptionLabel(item)).includes(normalized));
+  const compatible = getCompatibleInventoryForOrder();
+  return compatible.find((item) => normalizeSearchText(orderPartOptionLabel(item)) === normalized)
+    || compatible.find((item) => normalizeSearchText(displayInventoryName(item)) === normalized)
+    || compatible.find((item) => normalizeSearchText(orderPartOptionLabel(item)).includes(normalized));
 }
 
 function removeOrderPart(partId) {
@@ -2198,6 +2331,7 @@ function renderPurchaseCard(purchase) {
   const order = state.orders.find((item) => item.id === purchase.orderId);
   const items = normalizePurchaseItems(purchase);
   const total = getPurchaseTotal(purchase);
+  const receiptSummary = getPurchaseReceiptSummary(purchase);
   return `<article class="record-card">
     <div class="record-head">
       <div class="record-title">
@@ -2210,6 +2344,7 @@ function renderPurchaseCard(purchase) {
       ${items.map((item) => `<div class="record-meta">${escapeHtml(item.part)} | ${item.qty} pza. | ${money.format(Number(item.cost || 0))} c/u | ${money.format(Number(item.qty || 0) * Number(item.cost || 0))}</div>`).join("")}
     </div>
     <div class="record-meta">Total estimado: ${money.format(total)}</div>
+    ${receiptSummary ? `<div class="record-meta"><strong>Recepcion:</strong> ${escapeHtml(receiptSummary)}</div>` : ""}
     <div class="record-meta">${escapeHtml(purchase.notes || "Sin notas")}</div>
     <div class="record-actions">
       <button class="btn ghost" onclick="editPurchase('${purchase.id}')">Editar</button>
@@ -2253,6 +2388,7 @@ function savePurchase(event) {
     notes: el.purchaseNotes.value.trim(),
     receivedAt: existing?.receivedAt || "",
     receivedItems: existing?.receivedItems || [],
+    receivedQuantities: existing?.receivedQuantities || {},
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -2340,23 +2476,62 @@ function markPurchaseReceived(purchaseId) {
 
 function applyPurchaseReceipt(purchase, previousPurchase = null) {
   if (!purchase || purchase.status !== "Recibido") return 0;
-  const receivedKeys = new Set([...(previousPurchase?.receivedItems || []), ...(purchase.receivedItems || [])]);
+  const previousReceipt = getPurchaseReceiptMap(previousPurchase || purchase);
+  const nextReceipt = { ...previousReceipt };
   let applied = 0;
   normalizePurchaseItems(purchase).forEach((purchaseItem) => {
-    const key = purchaseItem.id || `${purchaseItem.part}-${purchaseItem.qty}-${purchaseItem.cost}`;
-    if (receivedKeys.has(key)) return;
-    receivePurchaseItem(purchase, purchaseItem);
-    receivedKeys.add(key);
-    applied += 1;
+    const key = getPurchaseItemReceiptKey(purchaseItem);
+    const expectedQty = Math.max(1, Number(purchaseItem.qty || 1));
+    const alreadyReceivedQty = Number(previousReceipt[key] || 0);
+    const pendingQty = Math.max(0, expectedQty - alreadyReceivedQty);
+    if (!pendingQty) return;
+    receivePurchaseItem(purchase, { ...purchaseItem, qty: pendingQty });
+    nextReceipt[key] = alreadyReceivedQty + pendingQty;
+    applied += pendingQty;
   });
   if (applied) {
     state.purchases = state.purchases.map((item) =>
       item.id === purchase.id
-        ? { ...item, receivedAt: item.receivedAt || new Date().toISOString(), receivedItems: [...receivedKeys], updatedAt: new Date().toISOString() }
+        ? {
+            ...item,
+            receivedAt: item.receivedAt || new Date().toISOString(),
+            receivedItems: Object.keys(nextReceipt),
+            receivedQuantities: nextReceipt,
+            updatedAt: new Date().toISOString()
+          }
         : item
     );
+    logAction("Inventario recibido", `${applied} pza. ingresada(s) desde ${purchase.folio}`, purchase.id);
   }
   return applied;
+}
+
+function getPurchaseItemReceiptKey(purchaseItem) {
+  return purchaseItem.id || normalizeSearchText(`${purchaseItem.part}-${purchaseItem.cost}`);
+}
+
+function getPurchaseReceiptMap(purchase) {
+  if (!purchase) return {};
+  if (purchase.receivedQuantities && typeof purchase.receivedQuantities === "object") {
+    return { ...purchase.receivedQuantities };
+  }
+  const legacyReceived = new Set(purchase.receivedItems || []);
+  return normalizePurchaseItems(purchase).reduce((map, item) => {
+    const key = getPurchaseItemReceiptKey(item);
+    if (legacyReceived.has(key) || legacyReceived.has(item.id)) {
+      map[key] = Math.max(1, Number(item.qty || 1));
+    }
+    return map;
+  }, {});
+}
+
+function getPurchaseReceiptSummary(purchase) {
+  if (purchase.status !== "Recibido") return "";
+  const receipt = getPurchaseReceiptMap(purchase);
+  const totalReceived = Object.values(receipt).reduce((sum, qty) => sum + Number(qty || 0), 0);
+  if (!totalReceived) return "Pendiente de ingresar a inventario";
+  const linkedOrder = purchase.orderId ? " Si esta ligada a una orden, se descuenta automaticamente como refaccion surtida." : "";
+  return `${totalReceived} pza. ingresada(s) a inventario.${linkedOrder}`;
 }
 
 function isPurchaseAppliedToOrder(purchase) {
@@ -2563,6 +2738,7 @@ function editOrder(orderId) {
   el.quotePartName.value = order.quotePartName || "";
   el.quoteSupplier.value = order.quoteSupplierId || "";
   setSelectedOrderParts(order.parts || []);
+  updateOrderPartContext();
   showView("orders");
 }
 
@@ -2685,8 +2861,11 @@ function resetOrderForm() {
   el.orderPartSearch.value = "";
   setSelectedOrderParts([]);
   el.quotePartName.value = "";
+  el.quotePartName.dataset.autoSuggestion = "";
+  if (el.purchasePart) el.purchasePart.dataset.autoSuggestion = "";
   el.quoteSupplier.value = "";
   if (state.clients[0]) el.orderClient.value = state.clients[0].id;
+  updateOrderPartContext();
 }
 
 function applyOrderInventoryMovements(order, previousOrder) {

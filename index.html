@@ -246,7 +246,8 @@
               <input type="hidden" id="orderId">
               <div class="form-grid">
                 <label>Cliente<select id="orderClient" required></select></label>
-                <label>Equipo<input id="orderDevice" required placeholder="Laptop HP, iPhone 12..."></label>
+                <label>Equipo<input id="orderDevice" list="orderDeviceModels" required placeholder="Laptop HP, iPhone 12..."></label>
+                <datalist id="orderDeviceModels"></datalist>
                 <label>Tecnico asignado<input id="orderTechnician" placeholder="Nombre del tecnico"></label>
                 <label>Serie / IMEI<input id="orderSerial" placeholder="Opcional"></label>
                 <label>Estado
