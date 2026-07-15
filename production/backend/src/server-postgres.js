@@ -712,6 +712,12 @@ function requireRole(...roles) {
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",") || true }));
 app.use(express.json({ limit: "12mb" }));
+app.use("/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
 
 app.get(["/", "/health", "/api/health"], (_req, res) => res.json({
   ok: true,
@@ -794,6 +800,29 @@ app.get("/api/public/orders/:folio", async (req, res) => {
 });
 
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.user }));
+
+app.get("/api/state", requireAuth, async (_req, res) => {
+  const payload = {};
+  for (const [stateKey, type] of [
+    ["settings", "settings"],
+    ["clients", "client"],
+    ["orders", "order"],
+    ["inventory", "inventory"],
+    ["suppliers", "supplier"],
+    ["appointments", "appointment"],
+    ["purchases", "purchase"],
+    ["payments", "payment"],
+    ["inventoryMovements", "inventoryMovement"],
+    ["warrantyClaims", "warrantyClaim"],
+    ["auditLog", "auditEntry"]
+  ]) {
+    const rows = await getNormalizedRecordsForType(type, false);
+    payload[stateKey] = type === "settings"
+      ? rows[0]?.data || null
+      : rows.map((row) => row.data || row);
+  }
+  res.json({ ok: true, at: now(), data: payload });
+});
 
 app.get("/api/records/:type", requireAuth, async (req, res) => {
   const { type } = req.params;

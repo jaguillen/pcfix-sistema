@@ -3,766 +3,237 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PCFIX | Sistema administrativo</title>
+    <title>PCFix Comitan | Sistema</title>
     <meta name="theme-color" content="#0B3B63">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="PCFix">
-    <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
-    <link rel="apple-touch-icon" href="assets/logo-pcfix.png">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <section class="login-screen" id="loginScreen" aria-label="Inicio de sesion">
-      <form class="login-card" id="loginForm">
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-card">
         <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
-        <div>
-          <h1>Acceso PCFix</h1>
-          <p>Ingresa para trabajar en linea con la informacion del servidor.</p>
-        </div>
-        <label>Servidor<input id="loginApiBaseUrl" value="https://pcfix-backend.onrender.com"></label>
-        <label>Email<input id="loginEmail" type="email" value="admin@pcfix.local" autocomplete="username"></label>
-        <label>Password<input id="loginPassword" type="password" autocomplete="current-password"></label>
+        <h1>PCFix Comitan</h1>
+        <p>Sistema administrativo en linea conectado a BD.</p>
+        <label>Servidor<input id="loginServer" value="https://pcfix-backend.onrender.com" required></label>
+        <label>Email<input id="loginEmail" type="email" value="admin@pcfix.local" required></label>
+        <label>Password<input id="loginPassword" type="password" required></label>
         <button class="btn primary" type="submit">Entrar</button>
       </form>
     </section>
 
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">
-            <img src="assets/logo-pcfix.png" alt="" onerror="this.remove()">
-            <span>PF</span>
-          </div>
+    <div id="app" class="pcfix-shell hidden">
+      <aside class="pcfix-sidebar">
+        <div class="pcfix-brand">
+          <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
           <div>
-            <strong id="brandName">PCFIX COMITAN</strong>
-            <span>Sistema administrativo</span>
+            <strong>PCFix Comitan</strong>
+            <span id="connectionLabel">BD en linea</span>
           </div>
         </div>
-        <nav class="nav" aria-label="Secciones">
-          <button class="nav-item active" data-view="dashboard">Panel</button>
-          <button class="nav-item" data-view="clients">Clientes</button>
-          <button class="nav-item" data-view="orders">Ordenes</button>
-          <button class="nav-item" data-view="inventory">Inventario</button>
-          <button class="nav-item" data-view="suppliers">Proveedores</button>
-          <button class="nav-item" data-view="appointments">Agenda</button>
-          <button class="nav-item" data-view="purchases">Compras</button>
-          <button class="nav-item" data-view="cash">Caja</button>
-          <button class="nav-item" data-view="warranties">Garantias</button>
-          <button class="nav-item" data-view="clientPortal">Portal cliente</button>
-          <button class="nav-item" data-view="settings">Configuracion</button>
+        <nav id="nav" class="pcfix-nav">
+          <button data-view="dashboard" class="active">Panel</button>
+          <button data-view="clients">Clientes</button>
+          <button data-view="orders">Ordenes</button>
+          <button data-view="inventory">Inventario</button>
+          <button data-view="suppliers">Proveedores</button>
+          <button data-view="purchases">Compras</button>
+          <button data-view="payments">Caja</button>
+          <button data-view="portal">Portal cliente</button>
+          <button data-view="settings">Configuracion</button>
         </nav>
-        <div class="sidebar-footer">
-          <span id="today"></span>
-          <small>Operacion en nube</small>
-        </div>
+        <button id="logoutBtn" class="btn ghost">Cerrar sesion</button>
       </aside>
 
-      <main class="workspace">
-        <header class="topbar">
+      <main class="pcfix-main">
+        <header class="pcfix-topbar">
           <div>
-            <h1 id="pageTitle">Panel administrativo</h1>
-            <p id="pageSubtitle">Control de reparaciones, clientes e inventario.</p>
+            <h1 id="viewTitle">Panel</h1>
+            <p id="viewSubtitle">Lectura directa desde Supabase/Postgres.</p>
           </div>
           <div class="topbar-actions">
-            <input id="globalSearch" type="search" placeholder="Buscar cliente, equipo, folio...">
-            <button class="btn primary" id="newOrderBtn">Nueva orden</button>
+            <input id="searchInput" type="search" placeholder="Buscar...">
+            <button id="refreshBtn" class="btn ghost">Actualizar BD</button>
+            <button id="newOrderBtn" class="btn primary">Nueva orden</button>
           </div>
         </header>
 
-        <section class="view active" id="dashboardView">
-          <section class="priority-strip" id="priorityStrip" aria-label="Prioridades operativas"></section>
+        <section id="alertBox" class="alert hidden"></section>
 
+        <section id="dashboardView" class="view active">
           <div class="metrics-grid">
-            <article class="metric">
-              <span>Ordenes activas</span>
-              <strong id="metricActive">0</strong>
-            </article>
-            <article class="metric">
-              <span>Listas para entrega</span>
-              <strong id="metricReady">0</strong>
-            </article>
-            <article class="metric">
-              <span>Ingresos estimados</span>
-              <strong id="metricRevenue">$0</strong>
-            </article>
-            <article class="metric">
-              <span>Stock bajo</span>
-              <strong id="metricLowStock">0</strong>
-            </article>
-            <article class="metric">
-              <span>Margen estimado</span>
-              <strong id="metricMargin">$0</strong>
-            </article>
+            <article class="metric"><span>Clientes</span><strong id="metricClients">0</strong></article>
+            <article class="metric"><span>Ordenes activas</span><strong id="metricOrders">0</strong></article>
+            <article class="metric"><span>Compras</span><strong id="metricPurchases">0</strong></article>
+            <article class="metric"><span>Inventario bajo</span><strong id="metricLowStock">0</strong></article>
+            <article class="metric"><span>Ingresos</span><strong id="metricRevenue">$0</strong></article>
           </div>
-
-          <section class="panel operations-panel">
-            <div class="panel-header">
-              <h2>Centro de salud del negocio</h2>
-              <span class="count-pill" id="businessHealthScore">0%</span>
-            </div>
-            <div class="operations-grid">
-              <article class="health-card">
-                <span>Rentabilidad</span>
-                <strong id="healthMargin">0%</strong>
-                <small id="healthMarginDetail">Sin ventas calculadas</small>
-              </article>
-              <article class="health-card">
-                <span>Cuentas por cobrar</span>
-                <strong id="healthReceivables">$0</strong>
-                <small id="healthReceivablesDetail">Sin saldos pendientes</small>
-              </article>
-              <article class="health-card">
-                <span>Riesgo operativo</span>
-                <strong id="healthRisk">0</strong>
-                <small id="healthRiskDetail">Sin alertas criticas</small>
-              </article>
-              <article class="health-card">
-                <span>Garantias</span>
-                <strong id="healthWarranty">$0</strong>
-                <small id="healthWarrantyDetail">Costo absorbido</small>
-              </article>
-            </div>
-            <div id="operationsInsights" class="insight-list"></div>
+          <section class="panel">
+            <div class="panel-header"><h2>Ordenes recientes</h2></div>
+            <div id="recentOrders" class="records-list"></div>
           </section>
-
-          <section class="panel decision-panel">
-            <div class="panel-header">
-              <h2>Graficos para toma de decisiones</h2>
-              <span class="count-pill" id="decisionSummary">Actualizado</span>
-            </div>
-            <div class="charts-grid">
-              <article class="chart-card">
-                <div class="chart-head">
-                  <strong>Ingresos por mes</strong>
-                  <span>Ventas estimadas</span>
-                </div>
-                <div id="revenueChart" class="chart-box" role="img" aria-label="Grafico de ingresos por mes"></div>
-              </article>
-              <article class="chart-card">
-                <div class="chart-head">
-                  <strong>Estado de ordenes</strong>
-                  <span>Carga operativa</span>
-                </div>
-                <div id="statusChart" class="chart-box" role="img" aria-label="Grafico de ordenes por estado"></div>
-              </article>
-              <article class="chart-card">
-                <div class="chart-head">
-                  <strong>Servicios frecuentes</strong>
-                  <span>Equipos con mas demanda</span>
-                </div>
-                <div id="deviceChart" class="chart-box" role="img" aria-label="Grafico de servicios frecuentes"></div>
-              </article>
-              <article class="chart-card">
-                <div class="chart-head">
-                  <strong>Riesgo de inventario</strong>
-                  <span>Stock contra minimo</span>
-                </div>
-                <div id="stockChart" class="chart-box" role="img" aria-label="Grafico de riesgo de inventario"></div>
-              </article>
-            </div>
-          </section>
-
-          <div class="dashboard-grid">
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Ordenes recientes</h2>
-                <button class="btn ghost" data-view-link="orders">Ver todas</button>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Folio</th>
-                      <th>Cliente</th>
-                      <th>Equipo</th>
-                      <th>Estado</th>
-                      <th>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody id="recentOrders"></tbody>
-                </table>
-              </div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Inventario critico</h2>
-                <button class="btn ghost" data-view-link="inventory">Gestionar</button>
-              </div>
-              <div id="lowStockList" class="stack-list"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Agenda proxima</h2>
-                <button class="btn ghost" data-view-link="appointments">Ver agenda</button>
-              </div>
-              <div id="upcomingAppointments" class="stack-list"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Compras pendientes</h2>
-                <button class="btn ghost" data-view-link="purchases">Ver compras</button>
-              </div>
-              <div id="pendingPurchases" class="stack-list"></div>
-            </section>
-          </div>
         </section>
 
-        <section class="view" id="clientsView">
+        <section id="clientsView" class="view">
           <div class="split-layout">
-            <form class="panel form-panel" id="clientForm">
-              <div class="panel-header">
-                <h2>Registro de clientes</h2>
-              </div>
-              <input type="hidden" id="clientId">
-              <label>Nombre completo<input id="clientName" required autocomplete="name"></label>
-              <label>Telefono WhatsApp<input id="clientPhone" required inputmode="tel" placeholder="9631234567"></label>
-              <label>Correo<input id="clientEmail" type="email" autocomplete="email"></label>
+            <form id="clientForm" class="panel form-panel">
+              <div class="panel-header"><h2>Cliente</h2></div>
+              <input id="clientId" type="hidden">
+              <label>Nombre<input id="clientName" required></label>
+              <label>Telefono WhatsApp<input id="clientPhone" inputmode="tel" required></label>
+              <label>Correo<input id="clientEmail" type="email"></label>
               <label>Direccion<textarea id="clientAddress" rows="3"></textarea></label>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar cliente</button>
-                <button class="btn ghost" type="button" id="resetClientForm">Limpiar</button>
-              </div>
+              <button class="btn primary" type="submit">Guardar cliente</button>
+              <button class="btn ghost" type="button" data-reset="client">Limpiar</button>
             </form>
             <section class="panel">
-              <div class="panel-header">
-                <h2>Clientes registrados</h2>
-                <span id="clientCount" class="count-pill">0</span>
-              </div>
+              <div class="panel-header"><h2>Clientes en BD</h2><span id="clientCount" class="count-pill">0</span></div>
               <div id="clientList" class="records-list"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" id="ordersView">
-          <div class="split-layout wide-form">
-            <form class="panel form-panel is-hidden" id="orderForm">
-              <div class="panel-header">
-                <h2>Orden de reparacion</h2>
-                <button class="btn ghost" type="button" id="cancelOrderForm">Cerrar</button>
-              </div>
-              <input type="hidden" id="orderId">
-              <div class="form-grid">
-                <label>Cliente<select id="orderClient" required></select></label>
-                <label>Equipo<input id="orderDevice" list="orderDeviceModels" required placeholder="Laptop HP, iPhone 12..."></label>
-                <datalist id="orderDeviceModels"></datalist>
-                <label>Tecnico asignado<input id="orderTechnician" placeholder="Nombre del tecnico"></label>
-                <label>Serie / IMEI<input id="orderSerial" placeholder="Opcional"></label>
-                <label>Estado
-                  <select id="orderStatus">
-                    <option>Recibido</option>
-                    <option>Diagnostico</option>
-                    <option>En reparacion</option>
-                    <option>Esperando pieza</option>
-                    <option>Listo</option>
-                    <option>Entregado</option>
-                    <option>Cancelado</option>
-                  </select>
-                </label>
-                <label>Anticipo<input id="orderDeposit" type="number" min="0" step="0.01" value="0"></label>
-                <label>Total<input id="orderTotal" type="number" min="0" step="0.01" value="0"></label>
-              </div>
-              <label>Falla rapida
-                <select id="quickIssue">
-                  <option value="">Seleccionar plantilla</option>
-                  <option>No enciende</option>
-                  <option>No carga</option>
-                  <option>Pantalla rota</option>
-                  <option>Equipo mojado</option>
-                  <option>Equipo lento</option>
-                  <option>No da imagen</option>
-                  <option>Se apaga solo</option>
-                  <option>No detecta disco</option>
-                  <option>Problema de software</option>
-                </select>
-              </label>
-              <label>Falla reportada<textarea id="orderIssue" required rows="3"></textarea></label>
-              <label>Diagnostico / trabajo realizado<textarea id="orderNotes" rows="3"></textarea></label>
-              <div class="intake-grid">
-                <section class="quote-box">
-                  <h3>Recepcion tecnica</h3>
-                  <label>Accesorios recibidos<textarea id="orderAccessories" rows="2" placeholder="Cargador, funda, cable, SIM, memoria..."></textarea></label>
-                  <label>Estado fisico<textarea id="orderPhysicalState" rows="2" placeholder="Rayones, golpes, humedad, pantalla rota..."></textarea></label>
-                  <div class="pattern-widget">
-                    <label>Clave / patron opcional<input id="orderPasscode" placeholder="PIN, clave o secuencia autorizada"></label>
-                    <div class="pattern-toolbar">
-                      <span>Patron visual</span>
-                      <select id="patternSize">
-                        <option value="3">3x3</option>
-                        <option value="4">4x4</option>
-                      </select>
-                      <button class="btn ghost" type="button" id="clearPattern">Limpiar patron</button>
-                    </div>
-                    <div id="patternGrid" class="pattern-grid pattern-3" aria-label="Patron de bloqueo"></div>
-                    <input id="patternValue" type="hidden">
-                  </div>
-                  <label>Evidencia fotografica<textarea id="orderEvidence" rows="2" placeholder="Ej. Foto frontal, posterior, etiqueta de serie, dano visible"></textarea></label>
-                  <div class="photo-uploader">
-                    <button class="btn ghost" type="button" id="addEvidencePhoto">Anadir foto</button>
-                    <input id="evidencePhotoInput" type="file" accept="image/*" multiple>
-                    <div id="evidencePhotoList" class="photo-list"></div>
-                  </div>
-                </section>
-                <section class="quote-box">
-                  <h3>Garantia y aprobacion</h3>
-                  <label>Dias de garantia<input id="orderWarrantyDays" type="number" min="90" step="1" value="90"></label>
-                  <label>Condiciones<textarea id="orderWarrantyTerms" rows="4"></textarea></label>
-                  <label class="checkbox-line"><input id="orderApproved" type="checkbox"> Cliente aprueba diagnostico y condiciones</label>
-                </section>
-              </div>
-              <div class="parts-picker">
-                <label>Refacciones usadas
-                  <div class="inline-field">
-                    <input id="orderPartSearch" list="orderPartOptions" placeholder="Buscar por marca, modelo o categoria">
-                    <button class="btn ghost" type="button" id="addOrderPart">Agregar</button>
-                  </div>
-                </label>
-                <datalist id="orderPartOptions"></datalist>
-                <div id="orderParts" class="selected-parts"></div>
-              </div>
-              <div class="quote-box">
-                <h3>Cotizacion automatica</h3>
-                <label>Pieza a cotizar<input id="quotePartName" placeholder="Pantalla iPhone 15, teclado HP..."></label>
-                <label>Proveedor<select id="quoteSupplier"></select></label>
-                <button class="btn ghost" type="button" id="quoteSupplierBtn">Cotizar ahora</button>
-              </div>
-              <div class="quote-box">
-                <h3>Firma de aceptacion</h3>
-                <canvas id="signaturePad" class="signature-pad" width="560" height="180" aria-label="Firma del cliente"></canvas>
-                <input id="signatureData" type="hidden">
-                <div class="form-actions">
-                  <button class="btn ghost" type="button" id="clearSignature">Limpiar firma</button>
-                </div>
-              </div>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar orden</button>
-                <button class="btn ghost" type="button" id="resetOrderForm">Limpiar</button>
-              </div>
-            </form>
+        <section id="ordersView" class="view">
+          <form id="orderForm" class="panel form-panel hidden">
+            <div class="panel-header"><h2 id="orderFormTitle">Nueva orden</h2><button id="cancelOrderBtn" class="btn ghost" type="button">Cancelar</button></div>
+            <input id="orderId" type="hidden">
+            <div class="form-grid">
+              <label>Cliente<select id="orderClient" required></select></label>
+              <label>Marca / modelo<input id="orderDevice" list="modelSuggestions" required></label>
+              <datalist id="modelSuggestions"></datalist>
+              <label>Tecnico<input id="orderTechnician"></label>
+              <label>Serie / IMEI<input id="orderSerial"></label>
+              <label>Estatus<select id="orderStatus"></select></label>
+              <label>Total<input id="orderTotal" type="number" min="0" step="0.01" value="0"></label>
+              <label>Anticipo<input id="orderDeposit" type="number" min="0" step="0.01" value="0"></label>
+              <label>Garantia dias<input id="orderWarrantyDays" type="number" min="90" value="90"></label>
+            </div>
+            <label>Falla / diagnostico<textarea id="orderIssue" rows="3" required></textarea></label>
+            <label>Condiciones / accesorios<textarea id="orderNotes" rows="3"></textarea></label>
+            <label>Refacciones usadas<select id="orderParts" multiple></select></label>
+            <button class="btn primary" type="submit">Guardar orden en BD</button>
+          </form>
+
+          <div class="two-panels">
             <section class="panel">
-              <div class="panel-header">
-                <h2>Ordenes activas</h2>
-                <div class="panel-tools">
-                  <span id="orderCount" class="count-pill">0</span>
-                  <button class="btn primary" id="newOrderInlineBtn" type="button">Nueva orden</button>
-                </div>
-              </div>
-              <form class="status-editor is-hidden" id="orderStatusForm">
-                <input type="hidden" id="statusOrderId">
-                <div>
-                  <span>Modificar estatus</span>
-                  <strong id="statusOrderSummary">Orden</strong>
-                </div>
-                <label>Estatus
-                  <select id="statusOnlySelect">
-                    <option>Recibido</option>
-                    <option>Diagnostico</option>
-                    <option>En reparacion</option>
-                    <option>Esperando pieza</option>
-                    <option>Listo</option>
-                    <option>Entregado</option>
-                    <option>Cancelado</option>
-                  </select>
-                </label>
-                <div class="status-evidence-box">
-                  <span>Evidencia fotografica del estatus</span>
-                  <p>Agrega fotos del avance, refaccion instalada, pruebas o entrega.</p>
-                  <button class="btn ghost" type="button" id="addStatusEvidencePhoto">Anadir foto</button>
-                  <input id="statusEvidencePhotoInput" type="file" accept="image/*" multiple>
-                  <div id="statusEvidencePhotoList" class="photo-list"></div>
-                </div>
-                <div class="form-actions">
-                  <button class="btn ghost" type="button" id="cancelStatusEdit">Cancelar</button>
-                  <button class="btn primary" type="submit">Guardar estatus</button>
-                </div>
-              </form>
-              <div id="orderList" class="records-list order-records"></div>
-              <div class="finished-orders">
-                <div class="panel-header">
-                  <h2>Ordenes finalizadas</h2>
-                  <span id="finishedOrderCount" class="count-pill">0</span>
-                </div>
-                <div id="finishedOrderList" class="records-list order-records"></div>
-              </div>
+              <div class="panel-header"><h2>Ordenes activas</h2><span id="activeOrderCount" class="count-pill">0</span></div>
+              <div id="activeOrderList" class="records-list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header"><h2>Ordenes finalizadas</h2><span id="finishedOrderCount" class="count-pill">0</span></div>
+              <div id="finishedOrderList" class="records-list"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" id="inventoryView">
+        <section id="inventoryView" class="view">
           <div class="split-layout">
-            <form class="panel form-panel" id="inventoryForm">
-              <div class="panel-header">
-                <h2>Inventario</h2>
-              </div>
-              <input type="hidden" id="itemId">
+            <form id="inventoryForm" class="panel form-panel">
+              <div class="panel-header"><h2>Articulo</h2></div>
+              <input id="itemId" type="hidden">
               <div class="form-grid">
-                <label>Marca<input id="itemBrand" list="deviceBrands" required placeholder="Apple, Samsung, Dell..."></label>
-                <label>Modelo<input id="itemModel" list="deviceModels" required placeholder="iPhone 17, XPS 13..."></label>
-              </div>
-              <datalist id="deviceBrands"></datalist>
-              <datalist id="deviceModels"></datalist>
-              <label>Categoria<input id="itemCategory" list="inventoryCategories" required placeholder="Selecciona o escribe una categoria"></label>
-              <datalist id="inventoryCategories"></datalist>
-              <div class="form-grid">
-                <label>Stock<input id="itemStock" type="number" min="0" required value="1"></label>
-                <label>Minimo<input id="itemMin" type="number" min="0" required value="1"></label>
+                <label>Marca<input id="itemBrand" required></label>
+                <label>Modelo<input id="itemModel" required></label>
+                <label>Categoria<input id="itemCategory" list="categorySuggestions" required></label>
+                <datalist id="categorySuggestions"></datalist>
+                <label>Stock<input id="itemStock" type="number" min="0" value="1"></label>
+                <label>Minimo<input id="itemMin" type="number" min="1" value="1"></label>
                 <label>Costo<input id="itemCost" type="number" min="0" step="0.01" value="0"></label>
-                <label>Precio subdistribuidor<input id="itemSubdealerPrice" type="number" min="0" step="0.01" value="0" readonly></label>
-                <label>Precio<input id="itemPrice" type="number" min="0" step="0.01" value="0"></label>
+                <label>Subdistribuidor<input id="itemSubdealer" type="number" min="0" step="0.01" value="0" readonly></label>
+                <label>Precio publico<input id="itemPrice" type="number" min="0" step="0.01" value="0"></label>
               </div>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar articulo</button>
-                <button class="btn ghost" type="button" id="resetInventoryForm">Limpiar</button>
-              </div>
+              <button class="btn primary" type="submit">Guardar articulo</button>
+              <button class="btn ghost" type="button" data-reset="inventory">Limpiar</button>
             </form>
             <section class="panel">
-              <div class="panel-header">
-                <h2>Existencias</h2>
-                <div class="panel-tools">
-                  <select id="inventoryCategoryFilter" aria-label="Filtrar inventario por categoria">
-                    <option value="">Todas las categorias</option>
-                  </select>
-                  <button class="btn ghost" id="exportInventory">Exportar CSV</button>
-                </div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Articulo</th>
-                      <th>Categoria</th>
-                      <th>Stock</th>
-                      <th>Subdist.</th>
-                      <th>Precio</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="inventoryTable"></tbody>
-                </table>
-              </div>
+              <div class="panel-header"><h2>Inventario en BD</h2><span id="inventoryCount" class="count-pill">0</span></div>
+              <div id="inventoryList" class="records-list"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" id="suppliersView">
+        <section id="suppliersView" class="view">
           <div class="split-layout">
-            <form class="panel form-panel" id="supplierForm">
-              <div class="panel-header">
-                <h2>Proveedores</h2>
-              </div>
-              <input type="hidden" id="supplierId">
-              <label>Nombre comercial<input id="supplierName" required placeholder="Proveedor de refacciones"></label>
-              <label>Contacto<input id="supplierContact" placeholder="Nombre del asesor"></label>
-              <label>Telefono WhatsApp<input id="supplierPhone" required inputmode="tel" placeholder="9631234567"></label>
+            <form id="supplierForm" class="panel form-panel">
+              <div class="panel-header"><h2>Proveedor</h2></div>
+              <input id="supplierId" type="hidden">
+              <label>Nombre<input id="supplierName" required></label>
+              <label>Contacto<input id="supplierContact"></label>
+              <label>Telefono<input id="supplierPhone" inputmode="tel"></label>
               <label>Correo<input id="supplierEmail" type="email"></label>
-              <label>Categoria / especialidad<input id="supplierCategory" placeholder="Pantallas, baterias, laptops..."></label>
+              <label>Categoria<input id="supplierCategory"></label>
               <label>Notas<textarea id="supplierNotes" rows="3"></textarea></label>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar proveedor</button>
-                <button class="btn ghost" type="button" id="resetSupplierForm">Limpiar</button>
-              </div>
+              <button class="btn primary" type="submit">Guardar proveedor</button>
             </form>
             <section class="panel">
-              <div class="panel-header">
-                <h2>Directorio</h2>
-                <span id="supplierCount" class="count-pill">0</span>
-              </div>
+              <div class="panel-header"><h2>Proveedores en BD</h2><span id="supplierCount" class="count-pill">0</span></div>
               <div id="supplierList" class="records-list"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" id="appointmentsView">
+        <section id="purchasesView" class="view">
           <div class="split-layout">
-            <form class="panel form-panel" id="appointmentForm">
-              <div class="panel-header">
-                <h2>Agenda de citas</h2>
-              </div>
-              <input type="hidden" id="appointmentId">
-              <label>Cliente<select id="appointmentClient" required></select></label>
-              <label>Orden relacionada<select id="appointmentOrder"></select></label>
-              <div class="form-grid">
-                <label>Fecha<input id="appointmentDate" type="date" required></label>
-                <label>Hora<input id="appointmentTime" type="time" required></label>
-              </div>
-              <label>Tipo
-                <select id="appointmentType">
-                  <option>Recepcion</option>
-                  <option>Diagnostico</option>
-                  <option>Entrega</option>
-                  <option>Garantia</option>
-                  <option>Seguimiento</option>
-                </select>
-              </label>
-              <label>Notas<textarea id="appointmentNotes" rows="3" placeholder="Equipo, motivo o indicaciones"></textarea></label>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar cita</button>
-                <button class="btn ghost" type="button" id="resetAppointmentForm">Limpiar</button>
-              </div>
-            </form>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Proximas citas</h2>
-                <span id="appointmentCount" class="count-pill">0</span>
-              </div>
-              <div id="appointmentList" class="records-list"></div>
-            </section>
-          </div>
-        </section>
-
-        <section class="view" id="purchasesView">
-          <div class="split-layout">
-            <form class="panel form-panel" id="purchaseForm">
-              <div class="panel-header">
-                <h2>Orden de compra</h2>
-              </div>
-              <input type="hidden" id="purchaseId">
+            <form id="purchaseForm" class="panel form-panel">
+              <div class="panel-header"><h2>Compra</h2></div>
+              <input id="purchaseId" type="hidden">
               <label>Proveedor<select id="purchaseSupplier" required></select></label>
-              <label>Orden de reparacion<select id="purchaseOrderLink"></select></label>
-              <label>Pieza solicitada<input id="purchasePart" placeholder="Pantalla, bateria, flex..."></label>
+              <label>Orden relacionada<select id="purchaseOrder"></select></label>
+              <label>Pieza solicitada<input id="purchasePart" required></label>
               <div class="form-grid">
-                <label>Cantidad<input id="purchaseQty" type="number" min="1" step="1" value="1"></label>
-                <label>Costo estimado<input id="purchaseCost" type="number" min="0" step="0.01" value="0"></label>
+                <label>Cantidad<input id="purchaseQty" type="number" min="1" value="1"></label>
+                <label>Costo<input id="purchaseCost" type="number" min="0" step="0.01" value="0"></label>
+                <label>Estatus<select id="purchaseStatus"></select></label>
               </div>
-              <div class="form-actions inline-actions">
-                <button class="btn ghost" type="button" id="addPurchaseItem">Agregar producto</button>
-              </div>
-              <div id="purchaseItemsList" class="line-items-list"></div>
-              <label>Estado
-                <select id="purchaseStatus">
-                  <option>Cotizando</option>
-                  <option>Pedido</option>
-                  <option>Recibido</option>
-                  <option>Cancelado</option>
-                </select>
-              </label>
               <label>Notas<textarea id="purchaseNotes" rows="3"></textarea></label>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar compra</button>
-                <button class="btn ghost" type="button" id="resetPurchaseForm">Limpiar</button>
-              </div>
+              <button class="btn primary" type="submit">Guardar compra</button>
             </form>
             <section class="panel">
-              <div class="panel-header">
-                <h2>Compras y cotizaciones</h2>
-                <span id="purchaseCount" class="count-pill">0</span>
-              </div>
+              <div class="panel-header"><h2>Compras en BD</h2><span id="purchaseCount" class="count-pill">0</span></div>
               <div id="purchaseList" class="records-list"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" id="cashView">
+        <section id="paymentsView" class="view">
           <div class="split-layout">
-            <form class="panel form-panel" id="paymentForm">
-              <div class="panel-header">
-                <h2>Registrar pago</h2>
-              </div>
-              <input type="hidden" id="paymentId">
+            <form id="paymentForm" class="panel form-panel">
+              <div class="panel-header"><h2>Pago</h2></div>
               <label>Orden<select id="paymentOrder" required></select></label>
-              <div class="form-grid">
-                <label>Monto<input id="paymentAmount" type="number" min="0" step="0.01" required></label>
-                <label>Metodo
-                  <select id="paymentMethod">
-                    <option>Efectivo</option>
-                    <option>Transferencia</option>
-                    <option>Tarjeta</option>
-                    <option>Deposito</option>
-                    <option>Otro</option>
-                  </select>
-                </label>
-              </div>
-              <label>Referencia<input id="paymentReference" placeholder="Folio, autorizacion o nota"></label>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar pago</button>
-                <button class="btn ghost" type="button" id="resetPaymentForm">Limpiar</button>
-              </div>
+              <label>Monto<input id="paymentAmount" type="number" min="0" step="0.01" required></label>
+              <label>Metodo<select id="paymentMethod"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select></label>
+              <label>Referencia<input id="paymentReference"></label>
+              <button class="btn primary" type="submit">Registrar pago</button>
             </form>
             <section class="panel">
-              <div class="panel-header">
-                <h2>Corte y pagos</h2>
-                <span id="cashSummary" class="count-pill">$0</span>
-              </div>
+              <div class="panel-header"><h2>Pagos en BD</h2><span id="paymentCount" class="count-pill">0</span></div>
               <div id="paymentList" class="records-list"></div>
             </section>
           </div>
         </section>
 
-        <section class="view" id="warrantiesView">
+        <section id="portalView" class="view">
           <div class="split-layout">
-            <form class="panel form-panel" id="warrantyForm">
-              <div class="panel-header">
-                <h2>Reclamo de garantia</h2>
-              </div>
-              <input type="hidden" id="warrantyId">
-              <label>Orden<select id="warrantyOrder" required></select></label>
-              <label>Motivo<textarea id="warrantyReason" rows="3" required></textarea></label>
-              <label>Resolucion<textarea id="warrantyResolution" rows="3"></textarea></label>
-              <div class="form-grid">
-                <label>Estado
-                  <select id="warrantyStatus">
-                    <option>Recibida</option>
-                    <option>En revision</option>
-                    <option>Procede</option>
-                    <option>No procede</option>
-                    <option>Cerrada</option>
-                  </select>
-                </label>
-                <label>Costo absorbido<input id="warrantyCost" type="number" min="0" step="0.01" value="0"></label>
-              </div>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">Guardar garantia</button>
-                <button class="btn ghost" type="button" id="resetWarrantyForm">Limpiar</button>
-              </div>
-            </form>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Garantias registradas</h2>
-                <span id="warrantyCount" class="count-pill">0</span>
-              </div>
-              <div id="warrantyList" class="records-list"></div>
-            </section>
-          </div>
-        </section>
-
-        <section class="view" id="clientPortalView">
-          <div class="portal-public-brand">
-            <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
-            <div>
-              <strong>Seguimiento PCFix</strong>
-              <span>Servicio tecnico con trazabilidad</span>
-            </div>
-          </div>
-          <div class="portal-layout">
-            <form class="panel form-panel" id="clientPortalForm">
-              <div class="panel-header">
-                <h2>Seguimiento de reparacion</h2>
-              </div>
-              <label>Folio de orden<input id="portalFolio" placeholder="PCF-2026-0001"></label>
-              <label>Telefono registrado<input id="portalPhone" inputmode="tel" placeholder="9631234567"></label>
+            <form id="portalForm" class="panel form-panel">
+              <div class="panel-header"><h2>Portal cliente</h2></div>
+              <label>Folio de orden<input id="portalFolio" placeholder="PCF-2026-0001" required></label>
               <button class="btn primary" type="submit">Consultar</button>
             </form>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Estado del servicio</h2>
-                <span id="portalStatusPill" class="count-pill">Sin consulta</span>
-              </div>
-              <div id="clientPortalResult" class="portal-result"></div>
-            </section>
+            <section class="panel"><div id="portalResult" class="portal-result"></div></section>
           </div>
         </section>
 
-        <section class="view" id="settingsView">
-          <div class="admin-grid">
-            <form class="panel form-panel" id="settingsForm">
-              <div class="panel-header">
-                <h2>Datos del negocio</h2>
-              </div>
-              <label>Nombre comercial<input id="businessName" required></label>
-              <label>Telefono WhatsApp<input id="businessPhone" required inputmode="tel"></label>
-              <label>Direccion<textarea id="businessAddress" rows="3"></textarea></label>
-              <label>Mensaje base de WhatsApp<textarea id="whatsappTemplate" rows="4"></textarea></label>
-              <div class="settings-block">
-                <h3>Paleta de colores</h3>
-                <div class="color-grid">
-                  <label>Principal<input id="themeBrand" type="color"></label>
-                  <label>Principal oscuro<input id="themeBrandStrong" type="color"></label>
-                  <label>Menu lateral<input id="themeSidebar" type="color"></label>
-                  <label>Fondo<input id="themePage" type="color"></label>
-                  <label>Paneles<input id="themePanel" type="color"></label>
-                  <label>Acento<input id="themeAccent" type="color"></label>
-                </div>
-                <div class="palette-presets" aria-label="Paletas rapidas">
-                  <button class="swatch preset-teal" type="button" data-palette="teal" title="PCFix Comitan"></button>
-                  <button class="swatch preset-blue" type="button" data-palette="blue" title="Azul tecnico"></button>
-                  <button class="swatch preset-graphite" type="button" data-palette="graphite" title="Grafito"></button>
-                </div>
-              </div>
-              <button class="btn primary" type="submit">Guardar configuracion</button>
-            </form>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Herramientas administrativas</h2>
-              </div>
-              <div class="admin-actions">
-                <button class="btn ghost" id="exportBackup">Respaldar datos</button>
-                <button class="btn ghost" id="exportReports">Exportar reportes</button>
-              </div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Conexion en linea</h2>
-                <span id="apiStatus" class="count-pill">Local</span>
-              </div>
-              <div class="backend-grid">
-                <label>URL del servidor<input id="apiBaseUrl" value="https://pcfix-backend.onrender.com"></label>
-                <label>Email<input id="apiEmail" type="email" value="admin@pcfix.local"></label>
-                <label>Password<input id="apiPassword" type="password"></label>
-              </div>
-              <div class="admin-actions">
-                <button class="btn primary" id="apiLogin" type="button">Conectar</button>
-                <button class="btn ghost" id="apiPull" type="button">Actualizar desde servidor</button>
-                <button class="btn danger" id="apiDisconnect" type="button">Desconectar</button>
-              </div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Usuarios</h2>
-                <span id="userCount" class="count-pill">0</span>
-              </div>
-              <div class="backend-grid">
-                <label>Nombre<input id="newUserName" placeholder="Nombre del usuario"></label>
-                <label>Email<input id="newUserEmail" type="email" placeholder="usuario@pcfix.local"></label>
-                <label>Password<input id="newUserPassword" type="password" placeholder="Temporal"></label>
-                <label>Rol
-                  <select id="newUserRole">
-                    <option value="technician">Tecnico</option>
-                    <option value="manager">Encargado</option>
-                    <option value="viewer">Solo lectura</option>
-                    <option value="admin">Administrador</option>
-                  </select>
-                </label>
-              </div>
-              <div class="admin-actions">
-                <button class="btn primary" id="createUserBtn" type="button">Crear usuario</button>
-                <button class="btn ghost" id="refreshUsersBtn" type="button">Actualizar lista</button>
-              </div>
-              <div id="userList" class="records-list"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Bitacora reciente</h2>
-                <span id="auditCount" class="count-pill">0</span>
-              </div>
-              <div id="auditList" class="records-list"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Movimientos de inventario</h2>
-                <span id="movementCount" class="count-pill">0</span>
-              </div>
-              <div id="movementList" class="records-list"></div>
-            </section>
-          </div>
+        <section id="settingsView" class="view">
+          <form id="settingsForm" class="panel form-panel">
+            <div class="panel-header"><h2>Configuracion</h2></div>
+            <label>Nombre comercial<input id="businessName" required></label>
+            <label>Telefono<input id="businessPhone" required></label>
+            <label>Direccion<textarea id="businessAddress" rows="3"></textarea></label>
+            <label>Mensaje WhatsApp<textarea id="whatsappTemplate" rows="3"></textarea></label>
+            <button class="btn primary" type="submit">Guardar configuracion</button>
+          </form>
         </section>
       </main>
     </div>
-
-    <dialog id="pdfDialog">
-      <div id="printArea"></div>
-      <div class="dialog-actions">
-        <button class="btn ghost" id="closePdf">Cerrar</button>
-        <button class="btn primary" id="printPdf">Guardar como PDF</button>
-      </div>
-    </dialog>
-
-    <template id="emptyTemplate">
-      <div class="empty-state">
-        <strong>Sin registros</strong>
-        <span>Agrega informacion para comenzar.</span>
-      </div>
-    </template>
 
     <script src="app.js"></script>
   </body>
