@@ -3281,13 +3281,8 @@ async function searchClientPortal(event) {
     el.clientPortalResult.innerHTML = emptyHtml("Ingresa el folio", "Usa el numero de orden que recibiste en tu comprobante.");
     return;
   }
-  if (publicPortalContext?.apiBaseUrl && folio) {
-    await searchPublicPortalOrder(folio);
-    return;
-  }
   const orders = state.orders.filter((item) => {
     if (item.archived) return false;
-    if (publicPortalContext?.code && item.trackingCode !== publicPortalContext.code) return false;
     const client = getClient(item.clientId);
     const folioMatches = folio && item.folio.toLowerCase() === folio;
     const phoneMatches = phone && normalizePhone(client?.phone) === phone;
@@ -4034,8 +4029,7 @@ const syncCollections = [
   ["purchases", "purchase"],
   ["payments", "payment"],
   ["inventoryMovements", "inventoryMovement"],
-  ["warrantyClaims", "warrantyClaim"],
-  ["auditLog", "auditEntry"]
+  ["warrantyClaims", "warrantyClaim"]
 ];
 
 async function pushLocalData(confirmFirst = true, options = {}) {
