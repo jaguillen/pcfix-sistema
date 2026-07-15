@@ -14,6 +14,21 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
+    <section class="login-screen" id="loginScreen" aria-label="Inicio de sesion">
+      <form class="login-card" id="loginForm">
+        <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
+        <div>
+          <h1>Acceso PCFix</h1>
+          <p>Ingresa para trabajar en linea con la informacion del servidor.</p>
+        </div>
+        <label>Servidor<input id="loginApiBaseUrl" value="https://pcfix-backend.onrender.com"></label>
+        <label>Email<input id="loginEmail" type="email" value="admin@pcfix.local" autocomplete="username"></label>
+        <label>Password<input id="loginPassword" type="password" autocomplete="current-password"></label>
+        <button class="btn primary" type="submit">Entrar</button>
+        <button class="btn ghost" type="button" id="loginOfflineBtn">Trabajar offline</button>
+      </form>
+    </section>
+
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -37,7 +52,7 @@
           <button class="nav-item" data-view="cash">Caja</button>
           <button class="nav-item" data-view="warranties">Garantias</button>
           <button class="nav-item" data-view="clientPortal">Portal cliente</button>
-          <button class="nav-item" data-view="settings">Admin</button>
+          <button class="nav-item" data-view="settings">Configuracion</button>
         </nav>
         <div class="sidebar-footer">
           <span id="today"></span>
@@ -650,13 +665,18 @@
             </section>
             <section class="panel">
               <div class="panel-header">
-                <h2>Conexion backend</h2>
+                <h2>Modo de trabajo</h2>
                 <span id="apiStatus" class="count-pill">Local</span>
               </div>
+              <label class="switch-line">
+                <input id="offlineMode" type="checkbox">
+                <span></span>
+                <strong>Trabajar offline</strong>
+              </label>
               <div class="backend-grid">
                 <label>URL del servidor<input id="apiBaseUrl" value="https://pcfix-backend.onrender.com"></label>
                 <label>Email<input id="apiEmail" type="email" value="admin@pcfix.local"></label>
-                <label>Password<input id="apiPassword" type="password" value="Cambiar123!"></label>
+                <label>Password<input id="apiPassword" type="password"></label>
               </div>
               <label class="checkbox-line"><input id="serverMode" type="checkbox"> Modo servidor automatico</label>
               <div class="admin-actions">

@@ -1,11 +1,11 @@
 ﻿const storageKey = "pcfix-system-v1";
 const apiStorageKey = "pcfix-api-config-v1";
+const apiSessionKey = "pcfix-api-session-v1";
 const pendingSyncKey = "pcfix-pending-sync-v1";
 const localSnapshotKey = "pcfix-local-snapshots-v1";
 const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
 const productionApiBaseUrl = "https://pcfix-backend.onrender.com";
 const defaultApiEmail = "admin@pcfix.local";
-const defaultApiPassword = "Cambiar123!";
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFormat = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const defaultWarrantyTerms = "Garantia de 90 dias sobre la reparacion realizada y las refacciones instaladas por PCFIX, contados a partir de la entrega del equipo. Para hacerla valida, el cliente debe presentar esta orden y permitir revision tecnica. La garantia cubre unicamente la falla corregida o la pieza instalada; no cubre danos por humedad, golpes, descargas electricas, mal uso, software, virus, accesorios externos, manipulacion de terceros, equipos abiertos fuera de PCFIX, sellos retirados, piezas proporcionadas por el cliente ni fallas distintas a las diagnosticadas. Cualquier trabajo adicional requiere diagnostico y autorizacion previa.";
@@ -200,6 +200,12 @@ let isSyncingNow = false;
 let purchaseDraftItems = [];
 
 const ids = [
+  "loginScreen",
+  "loginForm",
+  "loginApiBaseUrl",
+  "loginEmail",
+  "loginPassword",
+  "loginOfflineBtn",
   "brandName",
   "today",
   "globalSearch",
@@ -377,6 +383,7 @@ const ids = [
   "apiBaseUrl",
   "apiEmail",
   "apiPassword",
+  "offlineMode",
   "serverMode",
   "apiLogin",
   "apiPull",
@@ -413,10 +420,10 @@ document.addEventListener("DOMContentLoaded", () => {
   hydrateApiForm();
   hydratePortalFromHash();
   render();
-  cloudStartupSync();
+  enforceAccessMode();
   window.addEventListener("online", () => {
     updateApiStatus();
-    cloudStartupSync();
+    if (!apiConfig.offlineMode && apiConfig.token) cloudStartupSync();
   });
   window.addEventListener("offline", updateApiStatus);
   if (apiConfig.serverMode && syncQueue.length) scheduleServerSync(true);
@@ -431,6 +438,8 @@ function registerServiceWorker() {
 }
 
 function wireEvents() {
+  el.loginForm.addEventListener("submit", loginFromScreen);
+  el.loginOfflineBtn.addEventListener("click", enableOfflineFromLogin);
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
@@ -498,6 +507,7 @@ function wireEvents() {
   el.apiPull.addEventListener("click", pullBackendData);
   el.apiPush.addEventListener("click", pushLocalData);
   el.apiDisconnect.addEventListener("click", disconnectBackend);
+  el.offlineMode.addEventListener("change", toggleOfflineMode);
   el.serverMode.addEventListener("change", toggleServerMode);
   el.createUserBtn.addEventListener("click", createBackendUser);
   el.refreshUsersBtn.addEventListener("click", loadBackendUsers);
@@ -533,16 +543,21 @@ function loadState() {
 
 function loadApiConfig() {
   try {
+    const storedConfig = JSON.parse(localStorage.getItem(apiStorageKey) || "{}");
+    const session = JSON.parse(sessionStorage.getItem(apiSessionKey) || "{}");
     return {
       baseUrl: productionApiBaseUrl,
       email: defaultApiEmail,
       token: "",
       user: null,
       serverMode: true,
-      ...JSON.parse(localStorage.getItem(apiStorageKey) || "{}")
+      offlineMode: false,
+      ...storedConfig,
+      token: session.token || "",
+      user: session.user || null
     };
   } catch {
-    return { baseUrl: productionApiBaseUrl, email: defaultApiEmail, token: "", user: null, serverMode: true };
+    return { baseUrl: productionApiBaseUrl, email: defaultApiEmail, token: "", user: null, serverMode: true, offlineMode: false };
   }
 }
 
@@ -555,7 +570,13 @@ function loadSyncQueue() {
 }
 
 function saveApiConfig() {
-  localStorage.setItem(apiStorageKey, JSON.stringify(apiConfig));
+  const { token: _token, user: _user, ...persistentConfig } = apiConfig;
+  localStorage.setItem(apiStorageKey, JSON.stringify(persistentConfig));
+  if (apiConfig.token) {
+    sessionStorage.setItem(apiSessionKey, JSON.stringify({ token: apiConfig.token, user: apiConfig.user }));
+  } else {
+    sessionStorage.removeItem(apiSessionKey);
+  }
 }
 
 function saveSyncQueue() {
@@ -661,7 +682,7 @@ function showView(view) {
     cash: ["Caja", "Pagos, saldos y corte del dia."],
     warranties: ["Garantias", "Reclamos, resoluciones y costos absorbidos."],
     clientPortal: ["Portal cliente", "Consulta publica de seguimiento por folio y telefono."],
-    settings: ["Administracion", "Configuracion, respaldos y datos base del sistema."]
+    settings: ["Configuracion", "Datos del negocio, modo online/offline y usuarios."]
   };
   el.pageTitle.textContent = copy[view][0];
   el.pageSubtitle.textContent = copy[view][1];
@@ -1349,6 +1370,8 @@ function renderOrderCard(order, canEditStatus) {
   const paid = getOrderPaid(order);
   const balance = getOrderBalance(order);
   const warranty = getWarrantySummary(order);
+  const partsCost = getOrderPartsCost(order);
+  const margin = getOrderMargin(order);
   return `<article class="record-card ${canEditStatus ? "" : "finished-card"}">
     <div class="record-head">
       <div class="record-title">
@@ -1363,6 +1386,7 @@ function renderOrderCard(order, canEditStatus) {
     ${order.physicalState ? `<div class="record-meta"><strong>Estado fisico:</strong> ${escapeHtml(order.physicalState)}</div>` : ""}
     ${warranty ? `<div class="record-meta"><strong>Garantia:</strong> ${escapeHtml(warranty)}</div>` : ""}
     <div class="record-meta">Pagado: ${money.format(paid)} | Saldo: ${balance <= 0 ? "Pagado" : money.format(balance)} | Total: ${money.format(Number(order.total || 0))}</div>
+    <div class="record-meta">Costo refacciones: ${money.format(partsCost)} | Ganancia estimada: ${money.format(margin)}</div>
     ${renderOrderHistory(order)}
     <div class="record-actions">
       ${canEditStatus ? `<button class="btn ghost" onclick="editOrderStatus('${order.id}')">Modificar estatus</button>` : ""}
@@ -2179,6 +2203,10 @@ function sendPurchaseWhatsapp(purchaseId) {
 function markPurchaseReceived(purchaseId) {
   const purchase = state.purchases.find((item) => item.id === purchaseId);
   if (!purchase) return;
+  if (purchase.status === "Recibido") {
+    alert("Esta compra ya fue marcada como recibida.");
+    return;
+  }
   state.purchases = state.purchases.map((item) =>
     item.id === purchaseId ? { ...item, status: "Recibido", updatedAt: new Date().toISOString() } : item
   );
@@ -2189,16 +2217,25 @@ function markPurchaseReceived(purchaseId) {
 }
 
 function receivePurchaseItem(purchase, purchaseItem) {
-  const inventoryItem = findInventoryItemFromPartSearch(purchaseItem.part);
   const qty = Number(purchaseItem.qty || 1);
-  if (inventoryItem && confirm(`Agregar ${qty} pieza(s) al inventario ${displayInventoryName(inventoryItem)}?`)) {
+  const inventoryItem = findInventoryItemFromPartSearch(purchaseItem.part);
+  let receivedItem = inventoryItem;
+  if (inventoryItem) {
     state.inventory = state.inventory.map((item) =>
-      item.id === inventoryItem.id ? { ...item, stock: Number(item.stock || 0) + qty } : item
+      item.id === inventoryItem.id
+        ? {
+            ...item,
+            stock: Number(item.stock || 0) + qty,
+            cost: Number(purchaseItem.cost || item.cost || 0),
+            subdealerPrice: calculateSubdealerPrice(purchaseItem.cost || item.cost)
+          }
+        : item
     );
+    receivedItem = state.inventory.find((item) => item.id === inventoryItem.id);
     addInventoryMovement(inventoryItem.id, qty, "Entrada", `Compra recibida ${purchase.folio}: ${purchaseItem.part}`, purchase.id);
-  } else if (!inventoryItem && confirm(`No encontre "${purchaseItem.part}" en inventario. Crear articulo nuevo con esta compra?`)) {
+  } else {
     const parsed = parseInventoryName({ name: purchaseItem.part });
-    const newItem = {
+    receivedItem = {
       id: id("inv"),
       brand: parsed.brand,
       model: parsed.model,
@@ -2210,9 +2247,47 @@ function receivePurchaseItem(purchase, purchaseItem) {
       subdealerPrice: calculateSubdealerPrice(purchaseItem.cost),
       price: 0
     };
-    state.inventory = [newItem, ...state.inventory];
-    addInventoryMovement(newItem.id, qty, "Entrada", `Articulo creado desde ${purchase.folio}`, purchase.id);
+    state.inventory = [receivedItem, ...state.inventory];
+    addInventoryMovement(receivedItem.id, qty, "Entrada", `Articulo creado desde ${purchase.folio}`, purchase.id);
   }
+  if (purchase.orderId && receivedItem) {
+    supplyPurchaseItemToOrder(purchase, purchaseItem, receivedItem);
+  }
+}
+
+function supplyPurchaseItemToOrder(purchase, purchaseItem, inventoryItem) {
+  const order = state.orders.find((item) => item.id === purchase.orderId && !item.archived);
+  if (!order) return;
+  const qty = Math.max(1, Number(purchaseItem.qty || 1));
+  const consumedCost = Number(purchaseItem.cost || inventoryItem.cost || 0);
+  const suppliedParts = [...(order.suppliedParts || [])];
+  const alreadySupplied = suppliedParts.some((item) =>
+    item.purchaseId === purchase.id && item.purchaseItemId === purchaseItem.id
+  );
+  if (alreadySupplied) return;
+  state.inventory = state.inventory.map((item) =>
+    item.id === inventoryItem.id ? { ...item, stock: Math.max(0, Number(item.stock || 0) - qty) } : item
+  );
+  addInventoryMovement(inventoryItem.id, -qty, "Salida", `Surtida a orden ${order.folio} desde ${purchase.folio}`, order.id);
+  suppliedParts.push({
+    id: id("sup"),
+    inventoryId: inventoryItem.id,
+    purchaseId: purchase.id,
+    purchaseItemId: purchaseItem.id,
+    part: purchaseItem.part,
+    qty,
+    cost: consumedCost,
+    totalCost: consumedCost * qty,
+    createdAt: new Date().toISOString()
+  });
+  const parts = [...new Set([...(order.parts || []), inventoryItem.id])];
+  const stockDeductedParts = [...new Set([...(order.stockDeductedParts || []), inventoryItem.id])];
+  state.orders = state.orders.map((item) =>
+    item.id === order.id
+      ? { ...item, parts, suppliedParts, stockDeductedParts, updatedAt: new Date().toISOString() }
+      : item
+  );
+  logAction("Refaccion surtida", `${purchaseItem.part} -> ${order.folio}`, order.id);
 }
 
 function saveOrder(event) {
@@ -2249,6 +2324,8 @@ function saveOrder(event) {
     trackingCode: existing?.trackingCode || makeTrackingCode(),
     statusHistory: buildStatusHistory(existing, el.orderStatus.value),
     parts: selectedParts,
+    suppliedParts: existing?.suppliedParts || [],
+    stockDeductedParts: existing?.stockDeductedParts || [],
     quotePartName: el.quotePartName.value.trim(),
     quoteSupplierId: el.quoteSupplier.value,
     createdAt: existing?.createdAt || new Date().toISOString(),
@@ -2419,6 +2496,7 @@ function resetOrderForm() {
 function applyOrderInventoryMovements(order, previousOrder) {
   const previousDeducted = new Set(previousOrder?.stockDeductedParts || []);
   const nextDeducted = new Set(order.stockDeductedParts || previousOrder?.stockDeductedParts || []);
+  const suppliedParts = [...(order.suppliedParts || previousOrder?.suppliedParts || [])];
   (order.parts || []).forEach((partId) => {
     if (previousDeducted.has(partId) || nextDeducted.has(partId)) return;
     const item = state.inventory.find((entry) => entry.id === partId && !entry.archived);
@@ -2427,10 +2505,21 @@ function applyOrderInventoryMovements(order, previousOrder) {
       entry.id === partId ? { ...entry, stock: Math.max(0, Number(entry.stock || 0) - 1) } : entry
     );
     addInventoryMovement(partId, -1, "Salida", `Usada en orden ${order.folio}`, order.id);
+    suppliedParts.push({
+      id: id("sup"),
+      inventoryId: partId,
+      purchaseId: "",
+      purchaseItemId: "",
+      part: displayInventoryName(item),
+      qty: 1,
+      cost: Number(item.cost || 0),
+      totalCost: Number(item.cost || 0),
+      createdAt: new Date().toISOString()
+    });
     nextDeducted.add(partId);
   });
   state.orders = state.orders.map((item) =>
-    item.id === order.id ? { ...item, stockDeductedParts: [...nextDeducted] } : item
+    item.id === order.id ? { ...item, suppliedParts, stockDeductedParts: [...nextDeducted] } : item
   );
 }
 
@@ -2515,8 +2604,32 @@ function getOrderParts(order) {
     .filter(Boolean);
 }
 
+function getOrderSuppliedParts(order) {
+  return (order.suppliedParts || []).filter((part) => part?.part || part?.inventoryId);
+}
+
+function getOrderPartsCost(order) {
+  const suppliedParts = getOrderSuppliedParts(order);
+  if (suppliedParts.length) {
+    return suppliedParts.reduce((sum, part) => sum + Number(part.totalCost ?? Number(part.qty || 1) * Number(part.cost || 0)), 0);
+  }
+  return getOrderParts(order).reduce((sum, item) => sum + Number(item.cost || 0), 0);
+}
+
+function getOrderPartsSummary(order, includeCost = false) {
+  const suppliedParts = getOrderSuppliedParts(order);
+  if (suppliedParts.length) {
+    return suppliedParts.map((part) => {
+      const qty = Number(part.qty || 1);
+      const base = `${part.part || "Refaccion"} (${qty} pza.)`;
+      return includeCost ? `${base} - ${money.format(Number(part.totalCost ?? qty * Number(part.cost || 0)))}` : base;
+    }).join(", ");
+  }
+  return getOrderParts(order).map(displayInventoryName).join(", ");
+}
+
 function getOrderMargin(order) {
-  const partsCost = getOrderParts(order).reduce((sum, item) => sum + Number(item.cost || 0), 0);
+  const partsCost = getOrderPartsCost(order);
   return Number(order.total || 0) - partsCost;
 }
 
@@ -3037,7 +3150,7 @@ async function sendQuoteWhatsapp(orderId) {
   const balance = Math.max(0, Number(order.total || 0) - Number(order.deposit || 0));
   const paid = getOrderPaid(order);
   const warranty = getWarrantySummary(order);
-  const parts = getOrderParts(order).map(displayInventoryName).join(", ") || "Pendiente por confirmar";
+  const parts = getOrderPartsSummary(order) || "Pendiente por confirmar";
   const text = [
     `Hola ${client.name}, te compartimos la cotizacion de tu reparacion en ${state.settings.businessName}.`,
     `Folio: ${order.folio}`,
@@ -3076,9 +3189,7 @@ function openOrderPdf(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   const client = getClient(order?.clientId);
   if (!order || !client) return;
-  const parts = (order.parts || [])
-    .map((partId) => state.inventory.find((item) => item.id === partId)?.name)
-    .filter(Boolean);
+  const parts = getOrderPartsSummary(order, true);
   const warranty = getWarrantySummary(order);
   const photos = (order.evidencePhotos || []).filter((photo) => photo?.src);
   const paid = getOrderPaid(order);
@@ -3147,7 +3258,8 @@ function openOrderPdf(orderId) {
     </div>
     <div class="print-section">
       <h3>Refacciones</h3>
-      <p>${escapeHtml(parts.join(", ") || "Sin refacciones registradas")}</p>
+      <p>${escapeHtml(parts || "Sin refacciones registradas")}</p>
+      <p><strong>Costo aplicado a la orden:</strong> ${money.format(getOrderPartsCost(order))}</p>
     </div>
     <div class="print-section">
       <h3>Garantia</h3>
@@ -3330,13 +3442,21 @@ function hydrateApiForm() {
   el.apiBaseUrl.value = apiConfig.baseUrl || productionApiBaseUrl;
   el.apiEmail.value = apiConfig.email || defaultApiEmail;
   el.apiPassword.value = "";
+  el.loginApiBaseUrl.value = apiConfig.baseUrl || productionApiBaseUrl;
+  el.loginEmail.value = apiConfig.email || defaultApiEmail;
+  el.loginPassword.value = "";
+  el.offlineMode.checked = Boolean(apiConfig.offlineMode);
   el.serverMode.checked = Boolean(apiConfig.serverMode);
   updateApiStatus();
 }
 
 function updateApiStatus() {
+  if (apiConfig.offlineMode) {
+    el.apiStatus.textContent = "Offline";
+    return;
+  }
   if (!apiConfig.token) {
-    el.apiStatus.textContent = "Local";
+    el.apiStatus.textContent = "Requiere login";
     return;
   }
   if (!navigator.onLine) {
@@ -3354,12 +3474,75 @@ function updateApiStatus() {
   el.apiStatus.textContent = `${apiConfig.serverMode ? "Servidor" : "Conectado"}: guardado`;
 }
 
+function enforceAccessMode() {
+  const isPublicPortal = document.body.classList.contains("public-portal-mode");
+  if (isPublicPortal) {
+    hideLoginScreen();
+    return;
+  }
+  if (apiConfig.offlineMode) {
+    hideLoginScreen();
+    updateApiStatus();
+    return;
+  }
+  if (!apiConfig.token) {
+    showLoginScreen();
+    updateApiStatus();
+    return;
+  }
+  hideLoginScreen();
+  cloudStartupSync();
+}
+
+function showLoginScreen() {
+  document.body.classList.add("auth-locked");
+  el.loginScreen.classList.remove("is-hidden");
+}
+
+function hideLoginScreen() {
+  document.body.classList.remove("auth-locked");
+  el.loginScreen.classList.add("is-hidden");
+}
+
+async function loginFromScreen(event) {
+  event.preventDefault();
+  try {
+    apiConfig.baseUrl = el.loginApiBaseUrl.value.trim().replace(/\/$/, "");
+    apiConfig.email = el.loginEmail.value.trim();
+    apiConfig.offlineMode = false;
+    apiConfig.serverMode = true;
+    await authenticateBackend(apiConfig.baseUrl, apiConfig.email, el.loginPassword.value);
+    saveApiConfig();
+    hydrateApiForm();
+    hideLoginScreen();
+    await pullBackendData({ silent: true });
+    updateApiStatus();
+    render();
+  } catch (error) {
+    alert(`No se pudo iniciar sesion: ${error.message}`);
+  }
+}
+
+function enableOfflineFromLogin() {
+  apiConfig.offlineMode = true;
+  apiConfig.serverMode = false;
+  apiConfig.token = "";
+  apiConfig.user = null;
+  saveApiConfig();
+  hydrateApiForm();
+  hideLoginScreen();
+  updateApiStatus();
+}
+
 async function loginBackend() {
   try {
     apiConfig.baseUrl = el.apiBaseUrl.value.trim().replace(/\/$/, "");
     apiConfig.email = el.apiEmail.value.trim();
+    apiConfig.offlineMode = false;
+    apiConfig.serverMode = true;
     await authenticateBackend(apiConfig.baseUrl, apiConfig.email, el.apiPassword.value);
     saveApiConfig();
+    hydrateApiForm();
     updateApiStatus();
     loadBackendUsers();
     if (isLocalStateEmpty()) {
@@ -3392,12 +3575,36 @@ function disconnectBackend() {
   apiConfig.token = "";
   apiConfig.user = null;
   apiConfig.serverMode = false;
+  apiConfig.offlineMode = false;
   saveApiConfig();
   hydrateApiForm();
   updateApiStatus();
+  enforceAccessMode();
+}
+
+function toggleOfflineMode() {
+  apiConfig.offlineMode = el.offlineMode.checked;
+  if (apiConfig.offlineMode) {
+    apiConfig.token = "";
+    apiConfig.user = null;
+    apiConfig.serverMode = false;
+    el.serverMode.checked = false;
+    alert("Modo offline activo. Los cambios se guardaran en este navegador hasta volver a conectar.");
+  } else {
+    alert("Modo online activo. Inicia sesion para sincronizar con el servidor.");
+  }
+  saveApiConfig();
+  hydrateApiForm();
+  updateApiStatus();
+  enforceAccessMode();
 }
 
 function toggleServerMode() {
+  if (apiConfig.offlineMode) {
+    el.serverMode.checked = false;
+    alert("Desactiva el modo offline para usar sincronizacion con servidor.");
+    return;
+  }
   if (el.serverMode.checked && !apiConfig.token) {
     el.serverMode.checked = false;
     alert("Primero conecta al backend.");
@@ -3413,6 +3620,7 @@ function toggleServerMode() {
 }
 
 async function apiRequest(path, options = {}) {
+  if (apiConfig.offlineMode) throw new Error("Modo offline activo.");
   if (!apiConfig.token) throw new Error("Primero conecta al backend.");
   const response = await fetch(`${apiConfig.baseUrl}${path}`, {
     ...options,
@@ -3477,13 +3685,13 @@ async function pushLocalData(confirmFirst = true, options = {}) {
 }
 
 function scheduleServerSync(immediate = false) {
-  if (!apiConfig.serverMode || !apiConfig.token || isPullingFromBackend) return;
+  if (apiConfig.offlineMode || !apiConfig.serverMode || !apiConfig.token || isPullingFromBackend) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(flushSyncQueue, immediate ? 10 : 1200);
 }
 
 async function flushSyncQueue() {
-  if (!apiConfig.serverMode || !apiConfig.token || isPullingFromBackend || isSyncingNow || !syncQueue.length) return;
+  if (apiConfig.offlineMode || !apiConfig.serverMode || !apiConfig.token || isPullingFromBackend || isSyncingNow || !syncQueue.length) return;
   if (!navigator.onLine) {
     updateApiStatus();
     return;
@@ -3595,22 +3803,19 @@ async function pullBackendData(options = {}) {
 }
 
 async function autoRecoverFromBackendIfEmpty() {
-  if (!isLocalStateEmpty() || !apiConfig.token || !apiConfig.baseUrl || !navigator.onLine) return;
+  if (apiConfig.offlineMode || !isLocalStateEmpty() || !apiConfig.token || !apiConfig.baseUrl || !navigator.onLine) return;
   el.apiStatus.textContent = "Recuperando backend...";
   await pullBackendData({ silent: true });
   updateApiStatus();
 }
 
 async function cloudStartupSync() {
-  if (document.body.classList.contains("public-portal-mode") || !navigator.onLine) return;
+  if (apiConfig.offlineMode || document.body.classList.contains("public-portal-mode") || !navigator.onLine || !apiConfig.token) return;
   try {
     apiConfig.baseUrl = (apiConfig.baseUrl || productionApiBaseUrl).replace(/\/$/, "");
     apiConfig.email = apiConfig.email || defaultApiEmail;
     apiConfig.serverMode = true;
     el.apiStatus.textContent = "Conectando nube...";
-    if (!apiConfig.token) {
-      await authenticateBackend(apiConfig.baseUrl, apiConfig.email, defaultApiPassword);
-    }
     saveApiConfig();
     hydrateApiForm();
     if (syncQueue.length) {
