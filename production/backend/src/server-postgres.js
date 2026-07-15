@@ -33,7 +33,8 @@ const allowedTypes = new Set([
   "purchase",
   "payment",
   "inventoryMovement",
-  "warrantyClaim"
+  "warrantyClaim",
+  "auditEntry"
 ]);
 
 function now() {
@@ -42,6 +43,20 @@ function now() {
 
 function id(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function normalizeKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function appendConsecutive(value, number) {
+  const base = String(value || "").trim();
+  return `${base || "REGISTRO"}-${number}`;
+}
+
+function safeJsonField(field) {
+  if (!["folio", "trackingCode"].includes(field)) throw new Error("Campo JSON no permitido");
+  return field;
 }
 
 function normalizeRecord(row) {
@@ -83,6 +98,8 @@ async function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_records_type ON records(type);
     CREATE INDEX IF NOT EXISTS idx_records_archived ON records(archived);
+    CREATE INDEX IF NOT EXISTS idx_records_order_folio_lookup ON records (lower(data->>'folio')) WHERE type = 'order' AND archived = FALSE;
+    CREATE INDEX IF NOT EXISTS idx_records_order_tracking_lookup ON records ((data->>'trackingCode')) WHERE type = 'order' AND archived = FALSE;
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
@@ -105,6 +122,8 @@ async function initDb() {
     );
   `);
 
+  await runStabilityMigration();
+
   const adminEmail = (process.env.ADMIN_EMAIL || "admin@pcfix.local").toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD || "Cambiar123!";
   const existing = await query("SELECT id FROM users WHERE email = $1", [adminEmail]);
@@ -117,11 +136,134 @@ async function initDb() {
   }
 }
 
+async function runStabilityMigration() {
+  await repairDuplicateBusinessKeys();
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_order_folio
+      ON records (lower(data->>'folio'))
+      WHERE type = 'order' AND archived = FALSE AND COALESCE(data->>'folio', '') <> '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_order_tracking
+      ON records ((data->>'trackingCode'))
+      WHERE type = 'order' AND archived = FALSE AND COALESCE(data->>'trackingCode', '') <> '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_records_active_purchase_folio
+      ON records (lower(data->>'folio'))
+      WHERE type = 'purchase' AND archived = FALSE AND COALESCE(data->>'folio', '') <> '';
+  `);
+}
+
+async function repairDuplicateBusinessKeys() {
+  const repairedOrders = await repairDuplicatesForType("order", [
+    {
+      name: "folio",
+      get: (data) => data.folio,
+      set: (data, value) => ({ ...data, folio: value })
+    },
+    {
+      name: "trackingCode",
+      get: (data) => data.trackingCode,
+      set: (data, value) => ({ ...data, trackingCode: value })
+    }
+  ]);
+  const repairedPurchases = await repairDuplicatesForType("purchase", [
+    {
+      name: "folio",
+      get: (data) => data.folio,
+      set: (data, value) => ({ ...data, folio: value })
+    }
+  ]);
+  if (repairedOrders + repairedPurchases > 0) {
+    await audit(null, "stability_migration", "records", "", `${repairedOrders + repairedPurchases} duplicado(s) reparados`);
+  }
+}
+
+async function repairDuplicatesForType(type, fields) {
+  const result = await query(
+    "SELECT * FROM records WHERE type = $1 AND archived = FALSE ORDER BY created_at ASC, updated_at ASC",
+    [type]
+  );
+  const rows = result.rows.map(normalizeRecord);
+  let changed = 0;
+  for (const field of fields) {
+    const seen = new Set();
+    for (const row of rows) {
+      const currentValue = String(field.get(row.data) || "").trim();
+      if (!currentValue) continue;
+      let candidate = currentValue;
+      let key = normalizeKey(candidate);
+      if (!seen.has(key)) {
+        seen.add(key);
+        continue;
+      }
+      let consecutive = 2;
+      do {
+        candidate = appendConsecutive(currentValue, consecutive);
+        key = normalizeKey(candidate);
+        consecutive += 1;
+      } while (seen.has(key));
+      row.data = field.set(row.data, candidate);
+      seen.add(key);
+      changed += 1;
+      await query(
+        "UPDATE records SET data = $1, updated_at = $2 WHERE id = $3 AND type = $4",
+        [JSON.stringify(row.data), now(), row.id, type]
+      );
+    }
+  }
+  return changed;
+}
+
 async function audit(userId, action, recordType, recordId, detail = "") {
   await query(
     "INSERT INTO audit_log (id,user_id,action,record_type,record_id,detail,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
     [id("aud"), userId || null, action, recordType || null, recordId || null, detail, now()]
   );
+}
+
+async function prepareRecordForSave(type, requestedId, record) {
+  const data = { ...record };
+  let recordId = requestedId || data.id || id(type.slice(0, 3));
+  recordId = await resolveRecordId(type, recordId);
+  data.id = recordId;
+
+  if (type === "order") {
+    if (data.folio) data.folio = await resolveUniqueJsonField(type, recordId, "folio", data.folio);
+    if (data.trackingCode) data.trackingCode = await resolveUniqueJsonField(type, recordId, "trackingCode", data.trackingCode);
+  }
+  if (type === "purchase" && data.folio) {
+    data.folio = await resolveUniqueJsonField(type, recordId, "folio", data.folio);
+  }
+  return { recordId, data };
+}
+
+async function resolveRecordId(type, requestedId) {
+  const baseId = String(requestedId || id(type.slice(0, 3))).trim();
+  let candidate = baseId;
+  let consecutive = 2;
+  while (true) {
+    const existing = await query("SELECT id,type FROM records WHERE id = $1 LIMIT 1", [candidate]);
+    if (!existing.rows.length || existing.rows[0].type === type) return candidate;
+    candidate = appendConsecutive(baseId, consecutive);
+    consecutive += 1;
+  }
+}
+
+async function resolveUniqueJsonField(type, recordId, field, value) {
+  const jsonField = safeJsonField(field);
+  const baseValue = String(value || "").trim();
+  if (!baseValue) return baseValue;
+  let candidate = baseValue;
+  let consecutive = 2;
+  while (true) {
+    const existing = await query(
+      `SELECT id FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'${jsonField}') = lower($2) AND id <> $3 LIMIT 1`,
+      [type, candidate, recordId]
+    );
+    if (!existing.rows.length) return candidate;
+    candidate = appendConsecutive(baseValue, consecutive);
+    consecutive += 1;
+  }
 }
 
 function signToken(user) {
@@ -178,16 +320,18 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/public/orders/:folio", async (req, res) => {
   const folio = String(req.params.folio || "").toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
-  const result = await query(
-    "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 LIMIT 1",
-    ["order", folio]
-  );
+  const result = trackingCode
+    ? await query(
+        "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 AND data->>'trackingCode' = $3 ORDER BY updated_at DESC LIMIT 1",
+        ["order", folio, trackingCode]
+      )
+    : await query(
+        "SELECT * FROM records WHERE type = $1 AND archived = FALSE AND lower(data->>'folio') = $2 ORDER BY updated_at DESC LIMIT 1",
+        ["order", folio]
+      );
   const row = result.rows[0];
   if (!row) return res.status(404).json({ error: "Orden no encontrada" });
   const order = normalizeRecord(row).data;
-  if (trackingCode && order.trackingCode && trackingCode !== order.trackingCode) {
-    return res.status(403).json({ error: "Codigo de seguimiento invalido" });
-  }
   const clientResult = await query(
     "SELECT * FROM records WHERE type = $1 AND id = $2 AND archived = FALSE LIMIT 1",
     ["client", order.clientId]
@@ -205,6 +349,7 @@ app.get("/api/public/orders/:folio", async (req, res) => {
       warrantyTerms: order.warrantyTerms,
       total: order.total,
       deposit: order.deposit,
+      trackingCode: order.trackingCode,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
       statusHistory: order.statusHistory || [],
@@ -231,18 +376,31 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
   const { type } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
   const record = req.body?.data || {};
-  const recordId = req.body?.id || record.id || id(type.slice(0, 3));
+  const prepared = await prepareRecordForSave(type, req.body?.id || record.id, record);
+  const { recordId, data } = prepared;
   const timestamp = now();
-  const data = { ...record, id: recordId };
   const existing = await query("SELECT id FROM records WHERE id = $1", [recordId]);
-  await query(
-    `INSERT INTO records (id,type,data,archived,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
-    [recordId, type, JSON.stringify(data), Boolean(record.archived), timestamp, timestamp]
-  );
+  try {
+    await query(
+      `INSERT INTO records (id,type,data,archived,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
+      [recordId, type, JSON.stringify(data), Boolean(record.archived), timestamp, timestamp]
+    );
+  } catch (error) {
+    if (error?.code !== "23505") throw error;
+    const retry = await prepareRecordForSave(type, appendConsecutive(recordId, 2), data);
+    await query(
+      `INSERT INTO records (id,type,data,archived,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, archived = EXCLUDED.archived, updated_at = EXCLUDED.updated_at`,
+      [retry.recordId, type, JSON.stringify(retry.data), Boolean(record.archived), timestamp, timestamp]
+    );
+    await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${recordId}`);
+    return res.status(201).json({ id: retry.recordId, data: retry.data, deduped: true });
+  }
   await audit(req.user.sub, existing.rows.length ? "update" : "create", type, recordId, req.body?.detail || "");
-  res.status(existing.rows.length ? 200 : 201).json({ id: recordId, data });
+  res.status(existing.rows.length ? 200 : 201).json({ id: recordId, data, deduped: recordId !== (req.body?.id || record.id) });
 });
 
 app.post("/api/records/:type/:id/archive", requireAuth, requireRole("admin", "manager"), async (req, res) => {
@@ -257,6 +415,54 @@ app.get("/api/audit", requireAuth, requireRole("admin", "manager"), async (_req,
   const result = await query("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 250");
   res.json(result.rows);
 });
+
+app.get("/api/admin/stability", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
+  res.json(await getStabilityReport());
+});
+
+app.post("/api/admin/stability/repair", requireAuth, requireRole("admin"), async (req, res) => {
+  await repairDuplicateBusinessKeys();
+  await audit(req.user.sub, "manual_stability_repair", "records", "", "Reparacion manual de duplicados");
+  res.json(await getStabilityReport());
+});
+
+async function getStabilityReport() {
+  const [ordersFolio, ordersTracking, purchasesFolio, totals] = await Promise.all([
+    findDuplicateJsonValues("order", "folio"),
+    findDuplicateJsonValues("order", "trackingCode"),
+    findDuplicateJsonValues("purchase", "folio"),
+    query("SELECT type, COUNT(*)::int AS total FROM records WHERE archived = FALSE GROUP BY type ORDER BY type")
+  ]);
+  return {
+    ok: !ordersFolio.length && !ordersTracking.length && !purchasesFolio.length,
+    restrictions: [
+      "orden.folio unico en ordenes activas",
+      "orden.trackingCode unico en ordenes activas",
+      "compra.folio unico en compras activas",
+      "id primario unico global en records"
+    ],
+    duplicates: {
+      orderFolio: ordersFolio,
+      orderTrackingCode: ordersTracking,
+      purchaseFolio: purchasesFolio
+    },
+    totals: totals.rows
+  };
+}
+
+async function findDuplicateJsonValues(type, field) {
+  const jsonField = safeJsonField(field);
+  const result = await query(
+    `SELECT data->>'${jsonField}' AS value, COUNT(*)::int AS total
+     FROM records
+     WHERE type = $1 AND archived = FALSE AND COALESCE(data->>'${jsonField}', '') <> ''
+     GROUP BY data->>'${jsonField}'
+     HAVING COUNT(*) > 1
+     ORDER BY total DESC, value ASC`,
+    [type]
+  );
+  return result.rows;
+}
 
 app.get("/api/users", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
   const result = await query("SELECT id,name,email,role,active,created_at FROM users ORDER BY created_at DESC");
