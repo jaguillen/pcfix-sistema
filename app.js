@@ -1,7 +1,6 @@
 ﻿const storageKey = "pcfix-system-v1";
 const apiStorageKey = "pcfix-api-config-v1";
 const apiSessionKey = "pcfix-api-session-v1";
-const localSnapshotKey = "pcfix-local-snapshots-v1";
 const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
 const productionApiBaseUrl = "https://pcfix-backend.onrender.com";
 const defaultApiEmail = "admin@pcfix.local";
@@ -193,11 +192,14 @@ let apiConfig = loadApiConfig();
 let activeView = "dashboard";
 let syncTimer = null;
 let isPullingFromBackend = false;
+let isRefreshingFromBackend = false;
+let lastBackendRefreshAt = 0;
 let publicPortalContext = null;
 let syncQueue = [];
 let isSyncingNow = false;
 let purchaseDraftItems = [];
 let reconciliationTimer = null;
+let backendRefreshTimer = null;
 
 const ids = [
   "loginScreen",
@@ -431,20 +433,26 @@ document.addEventListener("DOMContentLoaded", () => {
     updateApiStatus();
     if (apiConfig.token) cloudStartupSync();
   });
+  window.addEventListener("focus", () => refreshBackendData({ silent: true, minInterval: 1000 }));
   window.addEventListener("offline", updateApiStatus);
 });
 
 function purgeLegacyBrowserStorage() {
-  localStorage.removeItem(storageKey);
+  localStorage.removeItem("pcfix-system-v1");
   localStorage.removeItem("pcfix-pending-sync-v1");
+  localStorage.removeItem("pcfix-local-snapshots-v1");
 }
 
 function startBackgroundServices() {
-  reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
+  reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: false });
   clearInterval(reconciliationTimer);
   reconciliationTimer = setInterval(() => {
-    reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: true });
+    reconcileReceivedPurchasesToOrders({ renderAfter: true, persistAfter: false });
   }, 45000);
+  clearInterval(backendRefreshTimer);
+  backendRefreshTimer = setInterval(() => {
+    refreshBackendData({ silent: true, minInterval: 10000 });
+  }, 15000);
 }
 
 function registerServiceWorker() {
@@ -456,7 +464,7 @@ function registerServiceWorker() {
 }
 
 function wireEvents() {
-  el.loginForm.addEventListener("submit", loginFromScreen);
+  bindSubmit(el.loginForm, loginFromScreen, "No se pudo iniciar sesion");
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
@@ -468,16 +476,16 @@ function wireEvents() {
   el.globalSearch.addEventListener("input", render);
   el.newOrderBtn.addEventListener("click", showNewOrderForm);
 
-  el.clientForm.addEventListener("submit", saveClient);
+  bindSubmit(el.clientForm, saveClient);
   el.resetClientForm.addEventListener("click", resetClientForm);
-  el.orderForm.addEventListener("submit", saveOrder);
+  bindSubmit(el.orderForm, saveOrder);
   el.orderDevice.addEventListener("input", updateOrderPartContext);
   el.orderIssue.addEventListener("input", updateOrderPartSuggestion);
   el.orderNotes.addEventListener("input", updateOrderPartSuggestion);
   el.resetOrderForm.addEventListener("click", resetOrderForm);
   el.cancelOrderForm.addEventListener("click", hideOrderForm);
   el.newOrderInlineBtn.addEventListener("click", showNewOrderForm);
-  el.orderStatusForm.addEventListener("submit", saveOrderStatus);
+  bindSubmit(el.orderStatusForm, saveOrderStatus);
   el.cancelStatusEdit.addEventListener("click", hideStatusEditor);
   el.addStatusEvidencePhoto?.addEventListener("click", () => el.statusEvidencePhotoInput?.click());
   el.statusEvidencePhotoInput?.addEventListener("change", addStatusEvidencePhotos);
@@ -496,24 +504,24 @@ function wireEvents() {
     }
   });
   el.quoteSupplierBtn.addEventListener("click", quoteMissingPart);
-  el.inventoryForm.addEventListener("submit", saveInventoryItem);
+  bindSubmit(el.inventoryForm, saveInventoryItem);
   el.resetInventoryForm.addEventListener("click", resetInventoryForm);
   el.inventoryCategoryFilter.addEventListener("change", renderInventory);
   el.itemBrand.addEventListener("input", renderDeviceModels);
   el.itemCost.addEventListener("input", updateSubdealerPrice);
-  el.supplierForm.addEventListener("submit", saveSupplier);
+  bindSubmit(el.supplierForm, saveSupplier);
   el.resetSupplierForm.addEventListener("click", resetSupplierForm);
-  el.appointmentForm.addEventListener("submit", saveAppointment);
+  bindSubmit(el.appointmentForm, saveAppointment);
   el.resetAppointmentForm.addEventListener("click", resetAppointmentForm);
-  el.purchaseForm.addEventListener("submit", savePurchase);
+  bindSubmit(el.purchaseForm, savePurchase);
   el.addPurchaseItem.addEventListener("click", addPurchaseItemFromForm);
   el.resetPurchaseForm.addEventListener("click", resetPurchaseForm);
-  el.paymentForm.addEventListener("submit", savePayment);
+  bindSubmit(el.paymentForm, savePayment);
   el.resetPaymentForm.addEventListener("click", resetPaymentForm);
-  el.warrantyForm.addEventListener("submit", saveWarrantyClaim);
+  bindSubmit(el.warrantyForm, saveWarrantyClaim);
   el.resetWarrantyForm.addEventListener("click", resetWarrantyForm);
-  el.clientPortalForm.addEventListener("submit", searchClientPortal);
-  el.settingsForm.addEventListener("submit", saveSettings);
+  bindSubmit(el.clientPortalForm, searchClientPortal, "No se pudo consultar");
+  bindSubmit(el.settingsForm, saveSettings);
   document.querySelectorAll("[data-palette]").forEach((button) => {
     button.addEventListener("click", () => applyPreset(button.dataset.palette));
   });
@@ -527,6 +535,18 @@ function wireEvents() {
   el.refreshUsersBtn.addEventListener("click", loadBackendUsers);
   el.closePdf.addEventListener("click", () => el.pdfDialog.close());
   el.printPdf.addEventListener("click", () => window.print());
+}
+
+function bindSubmit(form, handler, errorPrefix = "No se pudo guardar") {
+  form.addEventListener("submit", async (event) => {
+    try {
+      await handler(event);
+    } catch (error) {
+      console.error(error);
+      alert(`${errorPrefix}: ${error.message || error}`);
+      updateApiStatus();
+    }
+  });
 }
 
 function loadState() {
@@ -591,26 +611,6 @@ function countBusinessRecords(source = state) {
     .reduce((sum, key) => sum + (Array.isArray(source[key]) ? source[key].filter((item) => !item.archived).length : 0), 0);
 }
 
-function saveLocalSnapshot(reason = "Respaldo automatico") {
-  const snapshots = loadLocalSnapshots();
-  snapshots.unshift({
-    id: id("snap"),
-    reason,
-    at: new Date().toISOString(),
-    recordCount: countBusinessRecords(),
-    data: state
-  });
-  localStorage.setItem(localSnapshotKey, JSON.stringify(snapshots.slice(0, 10)));
-}
-
-function loadLocalSnapshots() {
-  try {
-    return JSON.parse(localStorage.getItem(localSnapshotKey) || "[]");
-  } catch {
-    return [];
-  }
-}
-
 function isLocalStateEmpty() {
   return countBusinessRecords() === 0;
 }
@@ -624,13 +624,12 @@ function isPreviousPcfixTheme(theme) {
 }
 
 function persist() {
-  persistLocalOnly();
   markPendingSync();
   scheduleServerSync(true);
 }
 
 function persistLocalOnly() {
-  sessionStorage.setItem(storageKey, JSON.stringify(state));
+  // La BD es la fuente de verdad. Solo mantenemos estado en memoria.
 }
 
 function id(prefix) {
@@ -675,6 +674,7 @@ function showView(view) {
   };
   el.pageTitle.textContent = copy[view][0];
   el.pageSubtitle.textContent = copy[view][1];
+  if (view !== "clientPortal") refreshBackendData({ silent: true, minInterval: 3000 });
 }
 
 function render() {
@@ -1311,7 +1311,7 @@ function resetWarrantyForm() {
 function archiveWarrantyClaim(claimId) {
   const claim = state.warrantyClaims.find((item) => item.id === claimId);
   if (!claim || !confirm("Archivar reclamo de garantia?")) return;
-  state.warrantyClaims = state.warrantyClaims.map((item) => item.id === claimId ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item);
+  state.warrantyClaims = state.warrantyClaims.map((item) => item.id === claimId ? { ...item, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : item);
   logAction("Garantia archivada", claim.reason, claimId);
   persist();
   render();
@@ -1335,7 +1335,8 @@ function savePayment(event) {
     amount,
     method: el.paymentMethod.value,
     reference: el.paymentReference.value.trim(),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
   state.payments = [payment, ...state.payments];
   applyPaymentsToOrder(order.id);
@@ -1377,7 +1378,7 @@ function applyPaymentsToOrder(orderId) {
   state.orders = state.orders.map((order) => {
     if (order.id !== orderId) return order;
     const paid = getOrderPaid(order);
-    return { ...order, deposit: paid, paid: getOrderBalance({ ...order, deposit: paid }) <= 0 };
+    return { ...order, deposit: paid, paid: getOrderBalance({ ...order, deposit: paid }) <= 0, updatedAt: new Date().toISOString() };
   });
 }
 
@@ -1956,7 +1957,9 @@ function saveClient(event) {
     name: el.clientName.value.trim(),
     phone: el.clientPhone.value.trim(),
     email: el.clientEmail.value.trim(),
-    address: el.clientAddress.value.trim()
+    address: el.clientAddress.value.trim(),
+    createdAt: state.clients.find((item) => item.id === el.clientId.value)?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
   state.clients = upsert(state.clients, payload);
   persist();
@@ -1978,9 +1981,9 @@ function editClient(clientId) {
 function archiveClient(clientId) {
   const client = getClient(clientId);
   if (!client || !confirm("Archivar cliente y ocultar sus ordenes/citas activas?")) return;
-  state.clients = state.clients.map((item) => item.id === clientId ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item);
-  state.orders = state.orders.map((order) => order.clientId === clientId ? { ...order, archived: true, archivedAt: new Date().toISOString() } : order);
-  state.appointments = state.appointments.map((appointment) => appointment.clientId === clientId ? { ...appointment, archived: true, archivedAt: new Date().toISOString() } : appointment);
+  state.clients = state.clients.map((item) => item.id === clientId ? { ...item, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : item);
+  state.orders = state.orders.map((order) => order.clientId === clientId ? { ...order, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : order);
+  state.appointments = state.appointments.map((appointment) => appointment.clientId === clientId ? { ...appointment, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : appointment);
   logAction("Cliente archivado", client.name, clientId);
   persist();
   render();
@@ -2024,7 +2027,9 @@ function saveSupplier(event) {
     phone: el.supplierPhone.value.trim(),
     email: el.supplierEmail.value.trim(),
     category: el.supplierCategory.value.trim(),
-    notes: el.supplierNotes.value.trim()
+    notes: el.supplierNotes.value.trim(),
+    createdAt: state.suppliers.find((item) => item.id === el.supplierId.value)?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
   state.suppliers = upsert(state.suppliers, payload);
   persist();
@@ -2048,7 +2053,7 @@ function editSupplier(supplierId) {
 function archiveSupplier(supplierId) {
   const supplier = state.suppliers.find((item) => item.id === supplierId);
   if (!supplier || !confirm("Archivar proveedor?")) return;
-  state.suppliers = state.suppliers.map((item) => item.id === supplierId ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item);
+  state.suppliers = state.suppliers.map((item) => item.id === supplierId ? { ...item, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : item);
   logAction("Proveedor archivado", supplier.name, supplierId);
   persist();
   render();
@@ -2163,7 +2168,7 @@ function resetAppointmentForm() {
 function archiveAppointment(appointmentId) {
   const appointment = state.appointments.find((item) => item.id === appointmentId);
   if (!appointment || !confirm("Archivar esta cita?")) return;
-  state.appointments = state.appointments.map((item) => item.id === appointmentId ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item);
+  state.appointments = state.appointments.map((item) => item.id === appointmentId ? { ...item, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : item);
   logAction("Cita archivada", `${appointment.type} ${appointment.date}`, appointmentId);
   persist();
   render();
@@ -2397,7 +2402,7 @@ function resetPurchaseForm() {
 function archivePurchase(purchaseId) {
   const purchase = state.purchases.find((item) => item.id === purchaseId);
   if (!purchase || !confirm("Archivar esta orden de compra?")) return;
-  state.purchases = state.purchases.map((item) => item.id === purchaseId ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item);
+  state.purchases = state.purchases.map((item) => item.id === purchaseId ? { ...item, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : item);
   logAction("Compra archivada", purchase.folio, purchaseId);
   persist();
   render();
@@ -2543,7 +2548,8 @@ function receivePurchaseItem(purchase, purchaseItem) {
             ...item,
             stock: Number(item.stock || 0) + qty,
             cost: Number(purchaseItem.cost || item.cost || 0),
-            subdealerPrice: calculateSubdealerPrice(purchaseItem.cost || item.cost)
+            subdealerPrice: calculateSubdealerPrice(purchaseItem.cost || item.cost),
+            updatedAt: new Date().toISOString()
           }
         : item
     );
@@ -2570,7 +2576,9 @@ function createInventoryItemFromPurchase(_purchase, purchaseItem, stock) {
     min: 1,
     cost: Number(purchaseItem.cost || 0),
     subdealerPrice: calculateSubdealerPrice(purchaseItem.cost),
-    price: 0
+    price: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
   state.inventory = [newItem, ...state.inventory];
   return newItem;
@@ -2587,7 +2595,7 @@ function supplyPurchaseItemToOrder(purchase, purchaseItem, inventoryItem) {
   );
   if (alreadySupplied) return false;
   state.inventory = state.inventory.map((item) =>
-    item.id === inventoryItem.id ? { ...item, stock: Math.max(0, Number(item.stock || 0) - qty) } : item
+    item.id === inventoryItem.id ? { ...item, stock: Math.max(0, Number(item.stock || 0) - qty), updatedAt: new Date().toISOString() } : item
   );
   addInventoryMovement(inventoryItem.id, -qty, "Salida", `Surtida a orden ${order.folio} desde ${purchase.folio}`, order.id);
   suppliedParts.push({
@@ -2804,7 +2812,7 @@ function archiveOrder(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order || !confirm("Archivar esta orden de reparacion?")) return;
   state.orders = state.orders.map((item) =>
-    item.id === orderId ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item
+    item.id === orderId ? { ...item, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : item
   );
   logAction("Orden archivada", order.folio, orderId);
   persist();
@@ -2842,7 +2850,7 @@ function applyOrderInventoryMovements(order, previousOrder) {
     const item = state.inventory.find((entry) => entry.id === partId && !entry.archived);
     if (!item) return;
     state.inventory = state.inventory.map((entry) =>
-      entry.id === partId ? { ...entry, stock: Math.max(0, Number(entry.stock || 0) - 1) } : entry
+      entry.id === partId ? { ...entry, stock: Math.max(0, Number(entry.stock || 0) - 1), updatedAt: new Date().toISOString() } : entry
     );
     addInventoryMovement(partId, -1, "Salida", `Usada en orden ${order.folio}`, order.id);
     suppliedParts.push({
@@ -2879,7 +2887,9 @@ function saveInventoryItem(event) {
     min: Math.max(1, Number(el.itemMin.value || 1)),
     cost,
     subdealerPrice: calculateSubdealerPrice(cost),
-    price: Number(el.itemPrice.value || 0)
+    price: Number(el.itemPrice.value || 0),
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
   state.inventory = upsert(state.inventory, payload);
   if (existing && Number(existing.stock || 0) !== Number(payload.stock || 0)) {
@@ -2913,7 +2923,7 @@ function editInventoryItem(itemId) {
 function archiveInventoryItem(itemId) {
   const item = state.inventory.find((entry) => entry.id === itemId);
   if (!item || !confirm("Archivar articulo del inventario?")) return;
-  state.inventory = state.inventory.map((entry) => entry.id === itemId ? { ...entry, archived: true, archivedAt: new Date().toISOString() } : entry);
+  state.inventory = state.inventory.map((entry) => entry.id === itemId ? { ...entry, archived: true, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : entry);
   logAction("Inventario archivado", displayInventoryName(item), itemId);
   persist();
   render();
@@ -2997,7 +3007,7 @@ function hydrateSettingsForm() {
   el.themeAccent.value = state.settings.theme.accent;
 }
 
-function saveSettings(event) {
+async function saveSettings(event) {
   event.preventDefault();
   state.settings = {
     ...state.settings,
@@ -3008,7 +3018,8 @@ function saveSettings(event) {
     theme: getThemeFromForm()
   };
   applyTheme();
-  persist();
+  await pushLocalData(false, { silent: true, notifyErrors: true, includeSettings: true });
+  await refreshBackendData({ silent: true, force: true });
   render();
   alert("Configuracion guardada.");
 }
@@ -3886,46 +3897,66 @@ const syncCollections = [
 ];
 
 async function pushLocalData(confirmFirst = true, options = {}) {
-  if (countBusinessRecords() === 0 && !options.allowEmpty) {
-    if (options.silent) return false;
-    const ok = confirm("La copia local no tiene clientes, ordenes ni inventario. Subirla podria dejar el backend vacio. Deseas continuar?");
-    if (!ok) return false;
-  }
+  const pendingRecords = getPendingSyncRecords();
+  if (!pendingRecords.length && !options.includeSettings) return true;
   if (confirmFirst && !confirm("Enviar cambios actuales al servidor? Los registros con el mismo ID se actualizaran.")) return;
   try {
     let changedByBackend = false;
-    const savedSettings = await apiRequest("/api/records/settings", {
-      method: "POST",
-          body: JSON.stringify({ id: "settings", data: { id: "settings", ...state.settings }, detail: "Sincronizacion en linea" })
-    });
-    if (savedSettings?.data) {
-      const { id: _id, ...settings } = savedSettings.data;
-      state.settings = {
-        ...state.settings,
-        ...settings,
-        theme: { ...state.settings.theme, ...(settings.theme || {}) }
-      };
-      changedByBackend = true;
-    }
-    for (const [stateKey, apiType, isSingleton] of syncCollections) {
-      if (isSingleton) continue;
-      for (const record of state[stateKey] || []) {
-        const saved = await apiRequest(`/api/records/${apiType}`, {
-          method: "POST",
-          body: JSON.stringify({ id: record.id, data: record, detail: "Sincronizacion en linea" })
-        });
-        if (applyBackendRecord(stateKey, record.id, saved)) changedByBackend = true;
+    if (options.includeSettings) {
+      const savedSettings = await apiRequest("/api/records/settings", {
+        method: "POST",
+        body: JSON.stringify({ id: "settings", data: { id: "settings", ...state.settings }, detail: "Sincronizacion en linea" })
+      });
+      if (savedSettings?.data) {
+        const { id: _id, ...settings } = savedSettings.data;
+        state.settings = {
+          ...state.settings,
+          ...settings,
+          theme: { ...state.settings.theme, ...(settings.theme || {}) }
+        };
+        changedByBackend = true;
       }
+    }
+    for (const { stateKey, apiType, record } of pendingRecords) {
+      const saved = await apiRequest(`/api/records/${apiType}`, {
+        method: "POST",
+        body: JSON.stringify({ id: record.id, data: record, detail: "Sincronizacion en linea" })
+      });
+      if (applyBackendRecord(stateKey, record.id, saved)) changedByBackend = true;
     }
     if (changedByBackend) persistLocalOnly();
     clearPendingSync();
     if (!options.silent) alert("Cambios enviados al servidor.");
+    await pullBackendData({ silent: true });
+    lastBackendRefreshAt = Date.now();
     return true;
   } catch (error) {
-    if (!options.silent) alert(`No se pudo subir: ${error.message}`);
+    if (!options.silent || options.notifyErrors) alert(`No se pudo guardar en servidor: ${error.message}`);
     updateApiStatus();
     return false;
   }
+}
+
+function getPendingSyncRecords() {
+  if (!syncQueue.length) return [];
+  const oldestPending = Math.min(...syncQueue.map((item) => new Date(item.at).getTime()).filter(Number.isFinite));
+  const since = Number.isFinite(oldestPending) ? oldestPending - 120000 : Date.now() - 120000;
+  const result = [];
+  for (const [stateKey, apiType, isSingleton] of syncCollections) {
+    if (isSingleton) continue;
+    for (const record of state[stateKey] || []) {
+      if (wasRecordChangedSince(record, since)) result.push({ stateKey, apiType, record });
+    }
+  }
+  return result;
+}
+
+function wasRecordChangedSince(record, since) {
+  const dates = [record?.updatedAt, record?.createdAt, record?.archivedAt, record?.receivedAt].filter(Boolean);
+  return dates.some((value) => {
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) && time >= since;
+  });
 }
 
 function scheduleServerSync(immediate = false) {
@@ -3942,7 +3973,7 @@ async function flushSyncQueue() {
   }
   isSyncingNow = true;
   updateApiStatus();
-  const ok = await pushLocalData(false, { silent: true });
+  const ok = await pushLocalData(false, { silent: true, notifyErrors: true });
   isSyncingNow = false;
   updateApiStatus();
   if (!ok && syncQueue.length) {
@@ -4042,10 +4073,25 @@ async function pullBackendData(options = {}) {
   }
 }
 
+async function refreshBackendData(options = {}) {
+  if (!apiConfig.token || !navigator.onLine || document.body.classList.contains("public-portal-mode")) return false;
+  if (isSyncingNow || isRefreshingFromBackend || isPullingFromBackend) return false;
+  const minInterval = Number(options.minInterval ?? 0);
+  if (!options.force && minInterval && Date.now() - lastBackendRefreshAt < minInterval) return false;
+  isRefreshingFromBackend = true;
+  try {
+    const ok = await pullBackendData({ silent: true });
+    if (ok) lastBackendRefreshAt = Date.now();
+    return ok;
+  } finally {
+    isRefreshingFromBackend = false;
+  }
+}
+
 async function autoRecoverFromBackendIfEmpty() {
   if (!isLocalStateEmpty() || !apiConfig.token || !apiConfig.baseUrl || !navigator.onLine) return;
   el.apiStatus.textContent = "Recuperando backend...";
-  await pullBackendData({ silent: true });
+  await refreshBackendData({ silent: true, force: true });
   updateApiStatus();
 }
 
@@ -4059,7 +4105,7 @@ async function cloudStartupSync() {
     saveApiConfig();
     hydrateApiForm();
     el.apiStatus.textContent = "Descargando nube...";
-    await pullBackendData({ silent: true });
+    await refreshBackendData({ silent: true, force: true });
     updateApiStatus();
   } catch (error) {
     el.apiStatus.textContent = "Nube no conectada";

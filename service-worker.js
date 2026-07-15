@@ -1,4 +1,4 @@
-const cacheName = "pcfix-app-v24";
+const cacheName = "pcfix-app-v26";
 const appShell = [
   "./",
   "./index.html",
