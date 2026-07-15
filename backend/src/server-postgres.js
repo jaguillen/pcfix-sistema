@@ -12,6 +12,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
 const databaseUrl = process.env.DATABASE_URL;
+const backendVersion = "pcfix-backend-bd-directa-20260715-03";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -47,6 +48,15 @@ function id(prefix) {
 
 function normalizeKey(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeSearchKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
 }
 
 function appendConsecutive(value, number) {
@@ -133,8 +143,15 @@ async function initDb() {
 
 async function runStabilityMigration() {
   await createProfessionalSchema();
+  await dropLegacyOfflineTables();
   await repairProfessionalDuplicateBusinessKeys();
   await createProfessionalConstraints();
+}
+
+async function dropLegacyOfflineTables() {
+  await query("DROP TABLE IF EXISTS records CASCADE");
+  await query("DROP TABLE IF EXISTS files CASCADE");
+  await audit(null, "drop_legacy_offline_tables", "database", "", "Tablas legacy records/files eliminadas; solo BD profesional online");
 }
 
 async function createProfessionalSchema() {
@@ -542,6 +559,9 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
         [item.id || id("pitem"), data.id, item.part, Math.max(0.01, asNumber(item.qty || 1)), Math.max(0, asNumber(item.cost)), JSON.stringify(item)]
       );
     }
+    if (!Boolean(archived || data.archived) && normalizeSearchKey(data.status) === "recibido") {
+      await applyReceivedPurchaseEffects(data, updated);
+    }
     return;
   }
   if (type === "payment") {
@@ -596,6 +616,101 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
        ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, detail = EXCLUDED.detail, ref_id = EXCLUDED.ref_id, raw_data = EXCLUDED.raw_data`,
       [data.id, data.type || "", data.detail || "", data.refId || "", JSON.stringify(data), created]
     );
+  }
+}
+
+async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
+  const movementId = `mov_purchase_${purchase.id}`;
+  const existingMovement = await query("SELECT id FROM inventory_movements WHERE id = $1 LIMIT 1", [movementId]);
+  if (existingMovement.rows.length) return;
+
+  const part = purchase.part || purchase.items?.[0]?.part || "Refaccion";
+  const qty = Math.max(1, asNumber(purchase.qty || purchase.items?.[0]?.qty || 1));
+  const cost = Math.max(0, asNumber(purchase.cost || purchase.items?.[0]?.cost));
+  const partKey = normalizeSearchKey(part);
+
+  const inventoryRows = await query(
+    "SELECT * FROM inventory_items WHERE archived = FALSE ORDER BY updated_at DESC"
+  );
+  const existingItem = inventoryRows.rows.find((item) => {
+    const display = [item.brand, item.model, item.name].filter(Boolean).join(" ");
+    return normalizeSearchKey(display) === partKey || normalizeSearchKey(item.name) === partKey;
+  });
+
+  let itemId = existingItem?.id || `inv_purchase_${purchase.id}`;
+  let inventoryData;
+  if (existingItem) {
+    inventoryData = {
+      ...(existingItem.raw_data || {}),
+      id: itemId,
+      brand: existingItem.brand || "",
+      model: existingItem.model || "",
+      name: existingItem.name || part,
+      category: existingItem.category || "Refacciones",
+      stock: Math.max(0, asNumber(existingItem.stock)) + qty,
+      min: Math.max(1, asNumber(existingItem.min_stock || existingItem.raw_data?.min || 1)),
+      minStock: Math.max(1, asNumber(existingItem.min_stock || existingItem.raw_data?.minStock || 1)),
+      cost: cost || asNumber(existingItem.cost),
+      subdealerPrice: Math.round((cost || asNumber(existingItem.cost)) * 1.3 * 100) / 100,
+      price: asNumber(existingItem.price),
+      updatedAt: timestamp
+    };
+  } else {
+    inventoryData = {
+      id: itemId,
+      brand: "",
+      model: "",
+      name: part,
+      category: "Refacciones",
+      stock: qty,
+      min: 1,
+      minStock: 1,
+      cost,
+      subdealerPrice: Math.round(cost * 1.3 * 100) / 100,
+      price: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  await syncNormalizedRecord("inventory", inventoryData, false, inventoryData.createdAt || timestamp, timestamp);
+  await syncNormalizedRecord("inventoryMovement", {
+    id: movementId,
+    itemId,
+    itemName: part,
+    qty,
+    type: "entrada",
+    detail: `Compra recibida ${purchase.folio || purchase.id}: ${part}`,
+    refId: purchase.id,
+    createdAt: timestamp
+  }, false, timestamp, timestamp);
+
+  if (purchase.orderId) {
+    const orderResult = await query("SELECT raw_data FROM service_orders WHERE id = $1 AND archived = FALSE LIMIT 1", [purchase.orderId]);
+    const order = orderResult.rows[0]?.raw_data;
+    if (order) {
+      const suppliedParts = Array.isArray(order.suppliedParts) ? order.suppliedParts : [];
+      const suppliedId = `op_purchase_${purchase.id}`;
+      if (!suppliedParts.some((entry) => entry.id === suppliedId || entry.purchaseId === purchase.id)) {
+        suppliedParts.push({
+          id: suppliedId,
+          inventoryId: itemId,
+          purchaseId: purchase.id,
+          purchaseItemId: purchase.items?.[0]?.id || "",
+          part,
+          qty,
+          cost,
+          totalCost: qty * cost,
+          createdAt: timestamp
+        });
+        await syncNormalizedRecord("order", {
+          ...order,
+          suppliedParts,
+          parts: [...new Set([...(order.parts || []), itemId])],
+          updatedAt: timestamp
+        }, false, order.createdAt || timestamp, timestamp);
+      }
+    }
   }
 }
 
@@ -723,6 +838,7 @@ app.get(["/", "/health", "/api/health"], (_req, res) => res.json({
   ok: true,
   service: "PCFix backend",
   mode: "postgres",
+  version: backendVersion,
   login: "/api/auth/login",
   health: "/api/health",
   stability: "/api/stability",
@@ -735,6 +851,7 @@ app.get("/api/stability", async (_req, res) => {
     ok: report.ok,
     service: "PCFix backend",
     mode: "postgres",
+    version: backendVersion,
     professionalDatabase: true,
     restrictions: report.restrictions,
     protectedReports: {

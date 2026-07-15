@@ -1,10 +1,10 @@
 # PCFix Comitan - Repo limpio
 
-Frontend limpio conectado directo a backend/Postgres.
+Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni almacenamiento local de datos de negocio.
 
 Version frontend:
 
-`pcfix-rebuild-bd-directa-manual-20260715-01`
+`pcfix-rebuild-bd-directa-manual-20260715-02`
 
 ## Que subir a GitHub
 
@@ -49,7 +49,21 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-rebuild-bd-directa-manual-20260715-01
+pcfix-rebuild-bd-directa-manual-20260715-02
 ```
 
-Si aparece `storageKey`, `pcfix-system-v1`, `pendingSyncKey` o `localSnapshotKey`, el hosting sigue sirviendo la version vieja.
+Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
+
+## Verificar backend correcto
+
+Abre `/api/health` y confirma:
+
+```txt
+pcfix-backend-bd-directa-20260715-03
+```
+
+Abre `/api/stability` y compara `totals.purchase` contra Supabase:
+
+```sql
+select count(*) from purchases where archived = false;
+```

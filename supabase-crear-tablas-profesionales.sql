@@ -1,6 +1,9 @@
 -- PCFix - Crear tablas profesionales en Supabase
 -- Ejecutar en Supabase > SQL Editor.
 
+DROP TABLE IF EXISTS records CASCADE;
+DROP TABLE IF EXISTS files CASCADE;
+
 CREATE TABLE IF NOT EXISTS app_settings (
   id TEXT PRIMARY KEY DEFAULT 'settings',
   business_name TEXT,

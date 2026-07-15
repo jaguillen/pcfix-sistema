@@ -1,22 +1,17 @@
-# PCFix Backend de Produccion
+# PCFix Backend Online
 
-Backend opcional para operar PCFix en varias computadoras con usuarios, roles, base SQLite/Postgres, auditoria, archivos y WhatsApp Cloud API.
+Backend unico para produccion con Node.js, Express y PostgreSQL/Supabase.
 
-Para produccion en Render se recomienda `src/server-postgres.js` con Supabase o Neon.
+No usa SQLite, no usa tabla `records`, no guarda archivos locales y no tiene modo offline.
 
-## Instalacion
+## Arranque
 
 ```bash
-cd outputs/production/backend
-copy .env.example .env
 npm install
-npm run init
 npm start
 ```
 
-## Produccion con Postgres
-
-Configura:
+## Variables requeridas
 
 ```env
 DATABASE_URL=postgresql://...
@@ -25,83 +20,29 @@ ADMIN_PASSWORD=pon-una-clave-segura
 JWT_SECRET=clave-larga-aleatoria
 ```
 
-Inicia con:
+El backend crea las tablas profesionales al iniciar y elimina tablas heredadas `records` y `files` si existen.
 
-```bash
-npm install
-node src/server-postgres.js
-```
-
-Guia completa:
-
-```text
-outputs/production/SUPABASE-POSTGRES.md
-```
-
-Credenciales iniciales por defecto:
-
-- Email: `admin@pcfix.local`
-- Password: `Cambiar123!`
-
-Cambia `ADMIN_EMAIL`, `ADMIN_PASSWORD` y `JWT_SECRET` antes de usarlo en produccion.
-
-## Roles
-
-- `admin`: administra todo.
-- `manager`: opera y archiva registros.
-- `technician`: crea/actualiza ordenes, inventario, citas, pagos y archivos.
-- `viewer`: solo lectura.
-
-## API principal
+## Endpoints principales
 
 - `POST /api/auth/login`
-- `GET /api/me`
+- `GET /api/state`
 - `GET /api/records/:type`
 - `POST /api/records/:type`
 - `POST /api/records/:type/:id/archive`
-- `POST /api/files/:recordId`
-- `GET /api/audit`
-- `GET /api/users`
-- `POST /api/users`
-- `POST /api/users/:id/deactivate`
-- `GET /api/whatsapp/webhook`
-- `POST /api/whatsapp/webhook`
-- `POST /api/whatsapp/send`
+- `GET /api/public/orders/:folio`
+- `GET /api/stability`
+- `GET /api/admin/stability`
+- `GET /api/admin/analytics`
+- `GET /api/admin/integrity`
 
 Tipos permitidos:
 
-`settings`, `client`, `order`, `inventory`, `supplier`, `appointment`, `purchase`, `payment`, `inventoryMovement`, `warrantyClaim`.
+`settings`, `client`, `order`, `inventory`, `supplier`, `appointment`, `purchase`, `payment`, `inventoryMovement`, `warrantyClaim`, `auditEntry`.
 
-## WhatsApp Cloud API
+## Reglas de consistencia
 
-Configura en `.env`:
-
-```env
-WHATSAPP_TOKEN=
-WHATSAPP_PHONE_NUMBER_ID=
-WHATSAPP_VERIFY_TOKEN=pcfix-webhook-token
-```
-
-En Render se configuran en `pcfix-backend > Environment`.
-Cuando estan presentes, el frontend envia mensajes por `POST /api/whatsapp/send` y ya no depende de abrir WhatsApp Web para estatus, seguimiento, cotizaciones y proveedores.
-
-Si no envia:
-
-- Verifica que `WHATSAPP_TOKEN` y `WHATSAPP_PHONE_NUMBER_ID` esten en Render.
-- Con token temporal, el numero destino debe estar agregado como numero de prueba en Meta.
-- Para enviar a clientes reales fuera de la ventana de 24 horas se requieren plantillas aprobadas de WhatsApp.
-- Revisa la tabla `whatsapp_messages` o los logs de Render para ver el error exacto de Meta.
-
-Webhook para Meta:
-
-```text
-https://tu-dominio.com/api/whatsapp/webhook
-```
-
-## Notas de produccion
-
-- Usar HTTPS obligatorio.
-- Respaldar `pcfix.sqlite` y `uploads/`.
-- Proteger `.env`.
-- Cambiar contrasenas iniciales.
-- Para produccion real, usar PostgreSQL con `src/server-postgres.js`.
+- Clientes, proveedores, ordenes, inventario, compras, pagos y configuracion se leen desde BD.
+- Al guardar una compra como `Recibido`, el backend suma inventario y crea movimiento de forma idempotente.
+- El movimiento `mov_purchase_<id>` evita duplicar stock si se vuelve a guardar la misma compra.
+- El portal cliente consulta directo a BD por folio con `/api/public/orders/:folio`.
+- Todas las respuestas `/api` se entregan con `Cache-Control: no-store`.
