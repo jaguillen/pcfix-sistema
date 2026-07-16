@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-04">
+    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-05">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -69,6 +69,20 @@
             <article class="metric"><span>Inventario bajo</span><strong id="metricLowStock">0</strong></article>
             <article class="metric"><span>Ingresos</span><strong id="metricRevenue">$0</strong></article>
           </div>
+          <section class="premium-grid">
+            <article class="panel">
+              <div class="panel-header"><h2>Centro de decisiones</h2><span id="decisionScore" class="count-pill">0%</span></div>
+              <div id="decisionInsights" class="insight-list"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-header"><h2>Estado operativo</h2></div>
+              <div id="statusChart" class="bar-chart"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-header"><h2>Riesgo de inventario</h2></div>
+              <div id="stockRiskList" class="compact-list"></div>
+            </article>
+          </section>
           <section class="panel">
             <div class="panel-header"><h2>Ordenes recientes</h2></div>
             <div id="recentOrders" class="records-list"></div>
@@ -111,7 +125,19 @@
             </div>
             <label>Falla / diagnostico<textarea id="orderIssue" rows="3" required></textarea></label>
             <label>Condiciones / accesorios<textarea id="orderNotes" rows="3"></textarea></label>
+            <label>Clave / patron
+              <div class="pattern-widget">
+                <select id="patternSize"><option value="3">3x3</option><option value="4">4x4</option></select>
+                <input id="orderPattern" placeholder="Ej. 1-2-5-8">
+              </div>
+              <div id="patternGrid" class="pattern-grid" aria-label="Patron de desbloqueo"></div>
+            </label>
+            <label>Evidencia fotografica
+              <input id="orderEvidence" type="file" accept="image/*" multiple>
+            </label>
+            <div id="evidencePreview" class="photo-strip"></div>
             <label>Refacciones usadas<select id="orderParts" multiple></select></label>
+            <label>Pieza sugerida para compra<input id="orderQuotePart" placeholder="Se autocompleta segun diagnostico"></label>
             <button class="btn primary" type="submit">Guardar orden en BD</button>
           </form>
 
@@ -181,6 +207,10 @@
               <label>Proveedor<select id="purchaseSupplier" required></select></label>
               <label>Orden relacionada<select id="purchaseOrder"></select></label>
               <label>Pieza solicitada<input id="purchasePart" required></label>
+              <div class="panel subtle-panel">
+                <div class="panel-header"><h2>Productos de la compra</h2><button id="addPurchaseItemBtn" class="btn ghost" type="button">Agregar producto</button></div>
+                <div id="purchaseItems" class="purchase-items"></div>
+              </div>
               <div class="form-grid">
                 <label>Cantidad<input id="purchaseQty" type="number" min="1" value="1"></label>
                 <label>Costo<input id="purchaseCost" type="number" min="0" step="0.01" value="0"></label>
@@ -231,6 +261,10 @@
             <label>Telefono<input id="businessPhone" required></label>
             <label>Direccion<textarea id="businessAddress" rows="3"></textarea></label>
             <label>Mensaje WhatsApp<textarea id="whatsappTemplate" rows="3"></textarea></label>
+            <div class="form-grid">
+              <label>Azul principal<input id="themeBlue" type="color" value="#0B3B63"></label>
+              <label>Turquesa<input id="themeCyan" type="color" value="#20C7D8"></label>
+            </div>
             <button class="btn primary" type="submit">Guardar configuracion</button>
           </form>
         </section>

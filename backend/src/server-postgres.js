@@ -12,7 +12,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-bd-directa-20260715-04";
+const backendVersion = "pcfix-backend-bd-directa-20260715-05";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -620,27 +620,31 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
 }
 
 async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
-  const movementId = `mov_purchase_${purchase.id}`;
-  const existingMovement = await query("SELECT id FROM inventory_movements WHERE id = $1 LIMIT 1", [movementId]);
-  if (existingMovement.rows.length) return;
+  const legacyMovement = await query("SELECT id FROM inventory_movements WHERE id = $1 LIMIT 1", [`mov_purchase_${purchase.id}`]);
+  if (legacyMovement.rows.length) return;
+  const items = Array.isArray(purchase.items) && purchase.items.length
+    ? purchase.items
+    : [{ id: "item", part: purchase.part || "Refaccion", qty: purchase.qty || 1, cost: purchase.cost || 0 }];
+  const suppliedForOrder = [];
+  const itemIdsForOrder = [];
+  let index = 0;
+  for (const item of items.filter((entry) => entry?.part)) {
+    index += 1;
+    const movementId = `mov_purchase_${purchase.id}_${item.id || index}`;
+    const existingMovement = await query("SELECT id FROM inventory_movements WHERE id = $1 LIMIT 1", [movementId]);
+    if (existingMovement.rows.length) continue;
 
-  const part = purchase.part || purchase.items?.[0]?.part || "Refaccion";
-  const qty = Math.max(1, asNumber(purchase.qty || purchase.items?.[0]?.qty || 1));
-  const cost = Math.max(0, asNumber(purchase.cost || purchase.items?.[0]?.cost));
-  const partKey = normalizeSearchKey(part);
-
-  const inventoryRows = await query(
-    "SELECT * FROM inventory_items WHERE archived = FALSE ORDER BY updated_at DESC"
-  );
-  const existingItem = inventoryRows.rows.find((item) => {
-    const display = [item.brand, item.model, item.name].filter(Boolean).join(" ");
-    return normalizeSearchKey(display) === partKey || normalizeSearchKey(item.name) === partKey;
-  });
-
-  let itemId = existingItem?.id || `inv_purchase_${purchase.id}`;
-  let inventoryData;
-  if (existingItem) {
-    inventoryData = {
+    const part = item.part || "Refaccion";
+    const qty = Math.max(1, asNumber(item.qty || 1));
+    const cost = Math.max(0, asNumber(item.cost || 0));
+    const partKey = normalizeSearchKey(part);
+    const inventoryRows = await query("SELECT * FROM inventory_items WHERE archived = FALSE ORDER BY updated_at DESC");
+    const existingItem = inventoryRows.rows.find((inv) => {
+      const display = [inv.brand, inv.model, inv.name].filter(Boolean).join(" ");
+      return normalizeSearchKey(display) === partKey || normalizeSearchKey(inv.name) === partKey;
+    });
+    const itemId = existingItem?.id || `inv_purchase_${purchase.id}_${index}`;
+    const inventoryData = existingItem ? {
       ...(existingItem.raw_data || {}),
       id: itemId,
       brand: existingItem.brand || "",
@@ -654,9 +658,7 @@ async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
       subdealerPrice: Math.round((cost || asNumber(existingItem.cost)) * 1.3 * 100) / 100,
       price: asNumber(existingItem.price),
       updatedAt: timestamp
-    };
-  } else {
-    inventoryData = {
+    } : {
       id: itemId,
       brand: "",
       model: "",
@@ -671,42 +673,42 @@ async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
       createdAt: timestamp,
       updatedAt: timestamp
     };
+    await syncNormalizedRecord("inventory", inventoryData, false, inventoryData.createdAt || timestamp, timestamp);
+    await syncNormalizedRecord("inventoryMovement", {
+      id: movementId,
+      itemId,
+      itemName: part,
+      qty,
+      type: "entrada",
+      detail: `Compra recibida ${purchase.folio || purchase.id}: ${part}`,
+      refId: purchase.id,
+      createdAt: timestamp
+    }, false, timestamp, timestamp);
+    itemIdsForOrder.push(itemId);
+    suppliedForOrder.push({
+      id: `op_purchase_${purchase.id}_${item.id || index}`,
+      inventoryId: itemId,
+      purchaseId: purchase.id,
+      purchaseItemId: item.id || "",
+      part,
+      qty,
+      cost,
+      totalCost: qty * cost,
+      createdAt: timestamp
+    });
   }
-
-  await syncNormalizedRecord("inventory", inventoryData, false, inventoryData.createdAt || timestamp, timestamp);
-  await syncNormalizedRecord("inventoryMovement", {
-    id: movementId,
-    itemId,
-    itemName: part,
-    qty,
-    type: "entrada",
-    detail: `Compra recibida ${purchase.folio || purchase.id}: ${part}`,
-    refId: purchase.id,
-    createdAt: timestamp
-  }, false, timestamp, timestamp);
-
   if (purchase.orderId) {
     const orderResult = await query("SELECT raw_data FROM service_orders WHERE id = $1 AND archived = FALSE LIMIT 1", [purchase.orderId]);
     const order = orderResult.rows[0]?.raw_data;
     if (order) {
       const suppliedParts = Array.isArray(order.suppliedParts) ? order.suppliedParts : [];
-      const suppliedId = `op_purchase_${purchase.id}`;
-      if (!suppliedParts.some((entry) => entry.id === suppliedId || entry.purchaseId === purchase.id)) {
-        suppliedParts.push({
-          id: suppliedId,
-          inventoryId: itemId,
-          purchaseId: purchase.id,
-          purchaseItemId: purchase.items?.[0]?.id || "",
-          part,
-          qty,
-          cost,
-          totalCost: qty * cost,
-          createdAt: timestamp
-        });
+      const newSupplied = suppliedForOrder.filter((entry) => !suppliedParts.some((existing) => existing.id === entry.id));
+      if (newSupplied.length) {
+        suppliedParts.push(...newSupplied);
         await syncNormalizedRecord("order", {
           ...order,
           suppliedParts,
-          parts: [...new Set([...(order.parts || []), itemId])],
+          parts: [...new Set([...(order.parts || []), ...itemIdsForOrder])],
           updatedAt: timestamp
         }, false, order.createdAt || timestamp, timestamp);
       }
@@ -1085,11 +1087,6 @@ async function getPurchaseSourceReport(includeRows = false) {
     `)
   ]);
   const legacyExists = Boolean(recordsTable.rows[0]?.exists);
-  let legacyPurchaseRecords = 0;
-  if (legacyExists) {
-    const legacy = await query("SELECT COUNT(*)::int AS total FROM records WHERE type = 'purchase'");
-    legacyPurchaseRecords = legacy.rows[0]?.total || 0;
-  }
   return {
     backendVersion,
     sourceTable: "purchases",
@@ -1098,7 +1095,7 @@ async function getPurchaseSourceReport(includeRows = false) {
     counts: purchaseCounts.rows[0],
     legacyRecordsTable: {
       exists: legacyExists,
-      purchaseRows: legacyPurchaseRecords
+      action: legacyExists ? "La tabla legacy existe; el arranque nuevo la eliminara." : "No existe tabla legacy."
     },
     rows: includeRows ? purchaseRows.rows : purchaseRows.rows.map((row) => ({
       id: row.id,

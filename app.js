@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-04";
+const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-05";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -58,6 +58,7 @@ let state = clone(defaultState);
 let session = loadSession();
 let activeView = "dashboard";
 let busy = false;
+let currentEvidencePhotos = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -159,7 +160,16 @@ function wireEvents() {
   $("settingsForm").addEventListener("submit", saveSettings);
   $("portalForm").addEventListener("submit", searchPortal);
   $("itemCost").addEventListener("input", () => $("itemSubdealer").value = calculateSubdealer($("itemCost").value).toFixed(2));
+  $("orderDevice").addEventListener("input", updateOrderSuggestions);
+  $("orderIssue").addEventListener("input", updateOrderSuggestions);
+  $("orderEvidence").addEventListener("change", handleEvidenceFiles);
+  $("patternSize").addEventListener("change", renderPatternGrid);
+  $("addPurchaseItemBtn").addEventListener("click", () => addPurchaseItemRow());
+  $("themeBlue").addEventListener("input", applyThemeFromInputs);
+  $("themeCyan").addEventListener("input", applyThemeFromInputs);
   document.querySelectorAll("[data-reset]").forEach((button) => button.addEventListener("click", () => resetForm(button.dataset.reset)));
+  renderPatternGrid();
+  renderPurchaseItems([]);
 }
 
 async function login(event) {
@@ -281,6 +291,7 @@ function showView(view) {
 }
 
 function render() {
+  applyTheme(state.settings.theme || {});
   renderSelectors();
   renderDashboard();
   renderClients();
@@ -293,12 +304,82 @@ function render() {
 }
 
 function renderDashboard() {
+  const orders = active(state.orders);
+  const inventory = active(state.inventory);
+  const purchases = active(state.purchases);
+  const activeOrders = orders.filter((o) => !["Entregado", "Cancelado"].includes(o.status));
+  const lowStock = inventory.filter((i) => Number(i.stock || 0) <= Number(i.min || i.minStock || 1));
+  const revenue = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const cost = orders.flatMap((o) => o.suppliedParts || []).reduce((sum, p) => sum + Number(p.totalCost || p.cost || 0), 0);
   $("metricClients").textContent = active(state.clients).length;
-  $("metricOrders").textContent = active(state.orders).filter((o) => !["Entregado", "Cancelado"].includes(o.status)).length;
-  $("metricPurchases").textContent = active(state.purchases).length;
-  $("metricLowStock").textContent = active(state.inventory).filter((i) => Number(i.stock || 0) <= Number(i.min || i.minStock || 1)).length;
-  $("metricRevenue").textContent = money.format(active(state.orders).reduce((sum, o) => sum + Number(o.total || 0), 0));
-  $("recentOrders").innerHTML = active(state.orders).slice(0, 8).map(orderCard).join("") || empty("Sin ordenes en BD");
+  $("metricOrders").textContent = activeOrders.length;
+  $("metricPurchases").textContent = purchases.length;
+  $("metricLowStock").textContent = lowStock.length;
+  $("metricRevenue").textContent = money.format(revenue);
+  $("recentOrders").innerHTML = orders.slice(0, 8).map(orderCard).join("") || empty("Sin ordenes en BD");
+  renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost });
+  renderStatusChart(orders);
+  renderStockRisk(lowStock);
+}
+
+function renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost }) {
+  const pendingPurchases = purchases.filter((p) => !["Recibido", "Cancelado"].includes(p.status || ""));
+  const readyOrders = activeOrders.filter((o) => o.status === "Listo");
+  const waitingParts = activeOrders.filter((o) => normalize(o.status).includes("pieza"));
+  const margin = revenue ? Math.max(0, Math.round(((revenue - cost) / revenue) * 100)) : 0;
+  $("decisionScore").textContent = `${margin}%`;
+  const insights = [
+    {
+      level: readyOrders.length ? "ok" : "neutral",
+      title: `${readyOrders.length} equipos listos para entrega`,
+      text: readyOrders.length ? "Prioridad alta: liberar caja y espacio de trabajo." : "Sin equipos listos pendientes."
+    },
+    {
+      level: waitingParts.length ? "warn" : "ok",
+      title: `${waitingParts.length} ordenes esperando pieza`,
+      text: waitingParts.length ? "Revisar compras abiertas y proveedores con mejor tiempo de respuesta." : "No hay reparaciones detenidas por pieza."
+    },
+    {
+      level: lowStock.length ? "warn" : "ok",
+      title: `${lowStock.length} articulos en stock bajo`,
+      text: lowStock.length ? "Conviene reponer refacciones criticas antes de prometer tiempos cortos." : "Inventario sin riesgo inmediato."
+    },
+    {
+      level: pendingPurchases.length ? "neutral" : "ok",
+      title: `${pendingPurchases.length} compras pendientes`,
+      text: pendingPurchases.length ? "Da seguimiento a cotizaciones/pedidos para evitar atrasos." : "Compras cerradas o recibidas."
+    }
+  ];
+  $("decisionInsights").innerHTML = insights.map((item) => `
+    <article class="insight ${item.level}">
+      <strong>${escapeHtml(item.title)}</strong>
+      <span>${escapeHtml(item.text)}</span>
+    </article>
+  `).join("");
+}
+
+function renderStatusChart(orders) {
+  const counts = orderStatuses.map((status) => ({
+    status,
+    total: orders.filter((o) => o.status === status).length
+  })).filter((row) => row.total > 0);
+  const max = Math.max(1, ...counts.map((row) => row.total));
+  $("statusChart").innerHTML = counts.map((row) => `
+    <div class="bar-row">
+      <span>${escapeHtml(row.status)}</span>
+      <div><i style="width:${Math.max(8, row.total / max * 100)}%"></i></div>
+      <b>${row.total}</b>
+    </div>
+  `).join("") || empty("Sin ordenes para graficar");
+}
+
+function renderStockRisk(items) {
+  $("stockRiskList").innerHTML = items.slice(0, 8).map((item) => `
+    <article>
+      <strong>${escapeHtml(displayItem(item))}</strong>
+      <span>Stock ${Number(item.stock || 0)} / Min ${Number(item.min || item.minStock || 1)}</span>
+    </article>
+  `).join("") || empty("Sin stock bajo");
 }
 
 function renderClients() {
@@ -350,14 +431,16 @@ function renderOrders() {
 
 function orderCard(o) {
   const client = getClient(o.clientId);
+  const evidenceCount = (o.statusEvidencePhotos || []).length;
   return card(`
     <strong>${escapeHtml(o.folio || o.id)} | ${escapeHtml(o.device || "")}</strong>
     <span>${escapeHtml(client?.name || "Sin cliente")} | ${escapeHtml(o.status || "")}</span>
-    <small>Total ${money.format(Number(o.total || 0))} | Anticipo ${money.format(Number(o.deposit || 0))} | Saldo ${money.format(getBalance(o))}</small>
+    <small>Total ${money.format(Number(o.total || 0))} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount}</small>
     <div class="record-actions">
       <button onclick="editOrder('${o.id}')" class="btn ghost">Modificar</button>
       <button onclick="quickStatus('${o.id}')" class="btn ghost">Estatus</button>
       <a class="btn ghost" target="_blank" rel="noreferrer" href="${client ? waUrl(client.phone, orderMessage(o)) : "#"}">WhatsApp</a>
+      <a class="btn ghost" target="_blank" rel="noreferrer" href="${client ? waUrl(client.phone, trackingMessage(o)) : "#"}">Seguimiento</a>
       <button onclick="removeRecord('order','${o.id}')" class="btn danger">Eliminar</button>
     </div>`);
 }
@@ -368,10 +451,12 @@ function renderPurchases() {
   $("purchaseList").innerHTML = rows.map((p) => {
     const supplier = getSupplier(p.supplierId);
     const order = state.orders.find((o) => o.id === p.orderId);
+    const items = p.items?.length ? p.items : [{ part: p.part, qty: p.qty || 1, cost: p.cost || 0 }];
+    const total = items.reduce((sum, item) => sum + Number(item.qty || 1) * Number(item.cost || 0), 0);
     return card(`
-      <strong>${escapeHtml(p.folio || p.id)} | ${escapeHtml(p.part || "")}</strong>
+      <strong>${escapeHtml(p.folio || p.id)} | ${items.length} producto(s)</strong>
       <span>${escapeHtml(supplier?.name || "Sin proveedor")} ${order ? "| " + escapeHtml(order.folio) : ""}</span>
-      <small>${escapeHtml(p.status || "")} | ${Number(p.qty || 1)} pza. | ${money.format(Number(p.cost || 0))}</small>
+      <small>${escapeHtml(p.status || "")} | ${money.format(total)} | ${items.map((item) => `${item.qty || 1}x ${item.part || ""}`).join(", ")}</small>
       <div class="record-actions">
         <button onclick="editPurchase('${p.id}')" class="btn ghost">Editar</button>
         <button onclick="receivePurchase('${p.id}')" class="btn ghost">Recibido + inventario</button>
@@ -470,6 +555,9 @@ async function saveOrder(event) {
       createdAt: now()
     };
   });
+  const status = $("orderStatus").value;
+  const total = Number($("orderTotal").value || 0);
+  const deposit = status === "Entregado" ? total : Number($("orderDeposit").value || 0);
   await saveRecord("order", {
     id: $("orderId").value || id("ord"),
     folio: existing?.folio || nextOrderFolio(),
@@ -477,16 +565,20 @@ async function saveOrder(event) {
     device: $("orderDevice").value.trim(),
     technician: $("orderTechnician").value.trim(),
     serial: $("orderSerial").value.trim(),
-    status: $("orderStatus").value,
-    total: Number($("orderTotal").value || 0),
-    deposit: Number($("orderDeposit").value || 0),
-    paid: Number($("orderDeposit").value || 0) >= Number($("orderTotal").value || 0),
+    status,
+    total,
+    deposit,
+    paid: deposit >= total,
     issue: $("orderIssue").value.trim(),
     notes: $("orderNotes").value.trim(),
+    unlockPattern: $("orderPattern").value.trim(),
+    patternSize: Number($("patternSize").value || 3),
+    quotePartName: $("orderQuotePart").value.trim(),
     warrantyDays: Math.max(90, Number($("orderWarrantyDays").value || 90)),
     warrantyTerms: defaultWarrantyTerms(),
     trackingCode: existing?.trackingCode || randomCode(),
-    statusHistory: updateHistory(existing, $("orderStatus").value),
+    statusHistory: updateHistory(existing, status),
+    statusEvidencePhotos: currentEvidencePhotos,
     parts: selectedParts,
     suppliedParts: existing?.suppliedParts?.length ? existing.suppliedParts : suppliedParts,
     createdAt: existing?.createdAt || now(),
@@ -499,19 +591,21 @@ async function saveOrder(event) {
 async function savePurchase(event) {
   event.preventDefault();
   const existing = state.purchases.find((p) => p.id === $("purchaseId").value);
+  const items = getPurchaseItemsFromForm();
+  const primary = items[0] || { part: $("purchasePart").value.trim(), qty: Math.max(1, Number($("purchaseQty").value || 1)), cost: Number($("purchaseCost").value || 0) };
   const purchase = {
     id: $("purchaseId").value || id("pur"),
     folio: existing?.folio || nextPurchaseFolio(),
     supplierId: $("purchaseSupplier").value,
     orderId: $("purchaseOrder").value,
-    part: $("purchasePart").value.trim(),
-    qty: Math.max(1, Number($("purchaseQty").value || 1)),
-    cost: Number($("purchaseCost").value || 0),
-    items: [{ id: existing?.items?.[0]?.id || id("pitem"), part: $("purchasePart").value.trim(), qty: Math.max(1, Number($("purchaseQty").value || 1)), cost: Number($("purchaseCost").value || 0) }],
+    part: primary.part,
+    qty: primary.qty,
+    cost: primary.cost,
+    items,
     status: $("purchaseStatus").value,
     notes: $("purchaseNotes").value.trim(),
     receivedAt: $("purchaseStatus").value === "Recibido" ? (existing?.receivedAt || now()) : "",
-    receivedQuantities: $("purchaseStatus").value === "Recibido" ? { [existing?.items?.[0]?.id || "item"]: Math.max(1, Number($("purchaseQty").value || 1)) } : {},
+    receivedQuantities: $("purchaseStatus").value === "Recibido" ? Object.fromEntries(items.map((item) => [item.id, item.qty])) : {},
     createdAt: existing?.createdAt || now(),
     updatedAt: now()
   };
@@ -557,7 +651,11 @@ async function saveSettings(event) {
     businessPhone: $("businessPhone").value.trim(),
     businessAddress: $("businessAddress").value.trim(),
     whatsappTemplate: $("whatsappTemplate").value.trim(),
-    theme: state.settings.theme || {}
+    theme: {
+      ...(state.settings.theme || {}),
+      blue: $("themeBlue").value || "#0B3B63",
+      cyan: $("themeCyan").value || "#20C7D8"
+    }
   });
   showAlert("Configuracion guardada en BD.", "ok");
 }
@@ -640,12 +738,23 @@ function editPurchase(idValue) {
   $("purchasePart").value = p.part || p.items?.[0]?.part || "";
   $("purchaseQty").value = Number(p.qty || p.items?.[0]?.qty || 1);
   $("purchaseCost").value = Number(p.cost || p.items?.[0]?.cost || 0);
+  renderPurchaseItems(p.items || [{ id: id("pitem"), part: p.part, qty: p.qty || 1, cost: p.cost || 0 }]);
   $("purchaseStatus").value = p.status || "Cotizando";
   $("purchaseNotes").value = p.notes || "";
   showView("purchases");
 }
 
+function applyTheme(theme = {}) {
+  if (theme.blue) document.documentElement.style.setProperty("--pcfix-blue", theme.blue);
+  if (theme.cyan) document.documentElement.style.setProperty("--pcfix-cyan", theme.cyan);
+}
+
+function applyThemeFromInputs() {
+  applyTheme({ blue: $("themeBlue").value, cyan: $("themeCyan").value });
+}
+
 function showOrderForm(order = null) {
+  currentEvidencePhotos = order?.statusEvidencePhotos || [];
   $("orderForm").classList.remove("hidden");
   $("orderFormTitle").textContent = order ? "Modificar orden" : "Nueva orden";
   $("orderId").value = order?.id || "";
@@ -659,6 +768,11 @@ function showOrderForm(order = null) {
   $("orderWarrantyDays").value = Math.max(90, Number(order?.warrantyDays || 90));
   $("orderIssue").value = order?.issue || "";
   $("orderNotes").value = order?.notes || "";
+  $("orderPattern").value = order?.unlockPattern || "";
+  $("patternSize").value = String(order?.patternSize || 3);
+  $("orderQuotePart").value = order?.quotePartName || suggestPartFromDiagnosis(order?.issue || "", order?.device || "");
+  renderPatternGrid();
+  renderEvidencePreview();
   Array.from($("orderParts").options).forEach((option) => option.selected = (order?.parts || []).includes(option.value));
   showView("orders");
 }
@@ -683,6 +797,127 @@ function resetForm(kind) {
   $("itemStock").value = 1;
   $("itemMin").value = 1;
   $("itemSubdealer").value = "0.00";
+  if (kind === "order") {
+    currentEvidencePhotos = [];
+    renderEvidencePreview();
+    $("orderQuotePart").value = "";
+    $("orderPattern").value = "";
+    renderPatternGrid();
+  }
+  if (kind === "purchase") renderPurchaseItems([]);
+}
+
+function updateOrderSuggestions() {
+  const suggested = suggestPartFromDiagnosis($("orderIssue").value, $("orderDevice").value);
+  if (!$("orderQuotePart").value.trim()) $("orderQuotePart").value = suggested;
+}
+
+function suggestPartFromDiagnosis(issue = "", device = "") {
+  const text = normalize(`${issue} ${device}`);
+  if (!text.trim()) return "";
+  const rules = [
+    ["pantalla display touch cristal no da imagen rota estrellada", "Pantalla / display compatible"],
+    ["bateria pila se descarga inflada no carga", "Bateria compatible"],
+    ["centro de carga puerto conector no carga humedad", "Puerto de carga / flex compatible"],
+    ["camara foto enfoque lente", "Camara compatible"],
+    ["microfono audio bocina altavoz auricular", "Modulo de audio compatible"],
+    ["teclado touchpad bisagra laptop", "Teclado / touchpad / bisagra compatible"],
+    ["ssd disco almacenamiento lento windows", "SSD / almacenamiento compatible"],
+    ["ram memoria reinicia lento", "Memoria RAM compatible"]
+  ];
+  return rules.find(([keys]) => keys.split(" ").some((key) => text.includes(key)))?.[1] || "Refaccion a confirmar segun diagnostico";
+}
+
+async function handleEvidenceFiles(event) {
+  const files = Array.from(event.target.files || []).slice(0, 8);
+  const photos = await Promise.all(files.map(fileToPhoto));
+  currentEvidencePhotos = [...currentEvidencePhotos, ...photos].slice(0, 12);
+  renderEvidencePreview();
+  event.target.value = "";
+}
+
+function fileToPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ id: id("pho"), name: file.name, type: file.type, dataUrl: reader.result, at: now() });
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderEvidencePreview() {
+  $("evidencePreview").innerHTML = currentEvidencePhotos.map((photo) => `
+    <figure>
+      <img src="${photo.dataUrl}" alt="${escapeHtml(photo.name || "Evidencia")}">
+      <button class="btn danger" type="button" onclick="removeEvidencePhoto('${photo.id}')">Quitar</button>
+    </figure>
+  `).join("");
+}
+
+function removeEvidencePhoto(photoId) {
+  currentEvidencePhotos = currentEvidencePhotos.filter((photo) => photo.id !== photoId);
+  renderEvidencePreview();
+}
+
+function renderPatternGrid() {
+  const size = Number($("patternSize")?.value || 3);
+  const selected = new Set(String($("orderPattern")?.value || "").split("-").map((x) => x.trim()).filter(Boolean));
+  $("patternGrid").style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+  $("patternGrid").innerHTML = Array.from({ length: size * size }, (_, index) => {
+    const value = String(index + 1);
+    return `<button type="button" class="${selected.has(value) ? "selected" : ""}" onclick="togglePatternPoint('${value}')">${value}</button>`;
+  }).join("");
+}
+
+function togglePatternPoint(value) {
+  const input = $("orderPattern");
+  const parts = input.value.split("-").map((x) => x.trim()).filter(Boolean);
+  input.value = parts.includes(value) ? parts.filter((part) => part !== value).join("-") : [...parts, value].join("-");
+  renderPatternGrid();
+}
+
+function renderPurchaseItems(items = []) {
+  const rows = items.length ? items : [{ id: id("pitem"), part: "", qty: 1, cost: 0 }];
+  $("purchaseItems").innerHTML = rows.map((item) => purchaseItemRow(item)).join("");
+}
+
+function purchaseItemRow(item) {
+  return `
+    <div class="purchase-item" data-purchase-item="${item.id || id("pitem")}">
+      <input data-field="part" placeholder="Pieza" value="${escapeHtml(item.part || "")}">
+      <input data-field="qty" type="number" min="1" value="${Number(item.qty || 1)}">
+      <input data-field="cost" type="number" min="0" step="0.01" value="${Number(item.cost || 0)}">
+      <button class="btn danger" type="button" onclick="removePurchaseItemRow(this)">Quitar</button>
+    </div>`;
+}
+
+function addPurchaseItemRow(item = null) {
+  $("purchaseItems").insertAdjacentHTML("beforeend", purchaseItemRow(item || { id: id("pitem"), part: "", qty: 1, cost: 0 }));
+}
+
+function removePurchaseItemRow(button) {
+  const rows = Array.from(document.querySelectorAll("[data-purchase-item]"));
+  if (rows.length <= 1) return;
+  button.closest("[data-purchase-item]")?.remove();
+}
+
+function getPurchaseItemsFromForm() {
+  const rows = Array.from(document.querySelectorAll("[data-purchase-item]"));
+  const items = rows.map((row) => ({
+    id: row.dataset.purchaseItem || id("pitem"),
+    part: row.querySelector('[data-field="part"]').value.trim(),
+    qty: Math.max(1, Number(row.querySelector('[data-field="qty"]').value || 1)),
+    cost: Number(row.querySelector('[data-field="cost"]').value || 0)
+  })).filter((item) => item.part);
+  if (!items.length && $("purchasePart").value.trim()) {
+    items.push({ id: id("pitem"), part: $("purchasePart").value.trim(), qty: Math.max(1, Number($("purchaseQty").value || 1)), cost: Number($("purchaseCost").value || 0) });
+  }
+  if (items[0]) {
+    $("purchasePart").value = items[0].part;
+    $("purchaseQty").value = items[0].qty;
+    $("purchaseCost").value = items[0].cost;
+  }
+  return items;
 }
 
 function hydrateSettings() {
@@ -690,6 +925,9 @@ function hydrateSettings() {
   $("businessPhone").value = state.settings.businessPhone || "";
   $("businessAddress").value = state.settings.businessAddress || "";
   $("whatsappTemplate").value = state.settings.whatsappTemplate || "";
+  $("themeBlue").value = state.settings.theme?.blue || "#0B3B63";
+  $("themeCyan").value = state.settings.theme?.cyan || "#20C7D8";
+  applyTheme(state.settings.theme || {});
 }
 
 async function searchPortal(event) {
@@ -708,15 +946,34 @@ async function searchPortal(event) {
       return;
     }
     const order = payload.order;
+    const client = payload.client || {};
     $("portalResult").innerHTML = `
-      <div class="timeline-card">
+      <div class="timeline-card portal-premium">
+        <div class="status-visual ${statusClass(order.status)}">
+          <div class="device-animation"><span></span><i></i></div>
+        </div>
         <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
-        <p>${escapeHtml(order.clientName || "Cliente")} | ${escapeHtml(order.status || "")}</p>
+        <p>${escapeHtml(client.name || "Cliente")} | ${escapeHtml(order.status || "")}</p>
         <div class="timeline">${orderStatuses.map((s) => `<span class="${orderStatuses.indexOf(s) <= orderStatuses.indexOf(order.status) ? "done" : ""}">${escapeHtml(s)}</span>`).join("")}</div>
+        <div class="portal-detail">
+          <strong>Garantia</strong><span>${Number(order.warrantyDays || 90)} dias</span>
+          <strong>Ultima actualizacion</strong><span>${escapeHtml(formatDate(order.updatedAt || order.updated_at || ""))}</span>
+        </div>
+        ${(order.statusEvidencePhotos || []).length ? `<div class="photo-strip readonly">${(order.statusEvidencePhotos || []).slice(0, 6).map((photo) => `<figure><img src="${photo.dataUrl}" alt="${escapeHtml(photo.name || "Evidencia")}"></figure>`).join("")}</div>` : ""}
       </div>`;
   } catch (error) {
     $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
   }
+}
+
+function statusClass(status = "") {
+  const value = normalize(status);
+  if (value.includes("listo")) return "ready";
+  if (value.includes("reparacion")) return "repair";
+  if (value.includes("pieza")) return "waiting";
+  if (value.includes("entregado")) return "delivered";
+  if (value.includes("diagnostico")) return "diagnostic";
+  return "received";
 }
 
 function active(rows) {
@@ -842,12 +1099,23 @@ function orderMessage(order) {
   return `Hola ${client?.name || ""}, tu equipo ${order.device || ""} con folio ${order.folio || ""} esta en estado: ${order.status || ""}.`;
 }
 
+function trackingMessage(order) {
+  return `Hola, puedes consultar el seguimiento de tu reparacion con el folio ${order.folio || ""} en el portal de PCFix. Estado actual: ${order.status || ""}.`;
+}
+
 function purchaseMessage(purchase) {
-  return `Hola, solicito cotizacion y disponibilidad de ${purchase.part || ""}, ${purchase.qty || 1} pieza(s).`;
+  const items = purchase.items?.length ? purchase.items : [{ part: purchase.part, qty: purchase.qty || 1 }];
+  return `Hola, solicito cotizacion y disponibilidad de: ${items.map((item) => `${item.qty || 1} ${item.part || ""}`).join(", ")}.`;
 }
 
 function defaultWarrantyTerms() {
   return "Garantia de 90 dias sobre la reparacion realizada y refacciones instaladas por PCFix. No cubre golpes, humedad, mal uso, software, virus, manipulacion de terceros ni fallas distintas a la diagnosticada.";
+}
+
+function formatDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : dateFmt.format(date);
 }
 
 function escapeHtml(value) {
@@ -869,5 +1137,8 @@ Object.assign(window, {
   editPurchase,
   removeRecord,
   quickStatus,
-  receivePurchase
+  receivePurchase,
+  removeEvidencePhoto,
+  togglePatternPoint,
+  removePurchaseItemRow
 });
