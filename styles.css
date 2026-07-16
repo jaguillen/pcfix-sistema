@@ -4529,3 +4529,304 @@ body.motion-disabled *::after {
   .quality-checklist label { grid-template-columns: 1fr; }
   .quality-certificate-grid { grid-template-columns: 1fr; }
 }
+
+/* Visual comfort layer 2026: readable operational density */
+@media screen {
+  body {
+    --ui-base: 16px;
+    --ui-small: 14px;
+    --ui-micro: 13px;
+    --ui-label: 14px;
+    --ui-control: 16px;
+    --ui-button: 15px;
+    --ui-nav: 15px;
+    --ui-target: 48px;
+    --ui-panel-pad: 26px;
+    font-size: var(--ui-base);
+    line-height: 1.5;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body.ui-density-compact {
+    --ui-base: 15px;
+    --ui-small: 13px;
+    --ui-micro: 12px;
+    --ui-label: 13px;
+    --ui-control: 15px;
+    --ui-button: 14px;
+    --ui-nav: 14px;
+    --ui-target: 44px;
+    --ui-panel-pad: 22px;
+  }
+
+  body.ui-density-large {
+    --ui-base: 18px;
+    --ui-small: 15px;
+    --ui-micro: 14px;
+    --ui-label: 15px;
+    --ui-control: 17px;
+    --ui-button: 16px;
+    --ui-nav: 16px;
+    --ui-target: 52px;
+    --ui-panel-pad: 30px;
+  }
+
+  .pcfix-shell { grid-template-columns: 292px minmax(0, 1fr); }
+
+  .pcfix-sidebar {
+    gap: 20px;
+    padding: 24px 20px;
+  }
+
+  .pcfix-brand strong { font-size: 17px; line-height: 1.3; }
+  .pcfix-brand span,
+  .connection-state { font-size: var(--ui-micro); line-height: 1.4; }
+
+  .pcfix-nav { gap: 5px; }
+
+  .pcfix-nav button {
+    min-height: var(--ui-target);
+    padding: 12px 14px 12px 20px;
+    font-size: var(--ui-nav);
+    line-height: 1.3;
+  }
+
+  .pcfix-main {
+    width: min(100%, 1760px);
+    padding: 34px 38px 58px;
+  }
+
+  .pcfix-topbar { min-height: 84px; margin-bottom: 28px; }
+  .pcfix-topbar h1 { font-size: 36px; line-height: 1.15; }
+  .pcfix-topbar p { font-size: var(--ui-small); line-height: 1.5; }
+  .workspace-eyebrow { font-size: var(--ui-micro); line-height: 1.3; }
+
+  label {
+    gap: 8px;
+    color: #344054;
+    font-size: var(--ui-label);
+    line-height: 1.4;
+  }
+
+  input,
+  select,
+  textarea {
+    min-height: var(--ui-target);
+    padding: 12px 14px;
+    color: #1F2937;
+    font-size: var(--ui-control);
+    line-height: 1.4;
+  }
+
+  textarea { min-height: 88px; resize: vertical; }
+  input[type="color"] { min-height: var(--ui-target); padding: 5px; }
+  input[type="checkbox"],
+  input[type="radio"] { min-height: 22px; min-width: 22px; }
+
+  input::placeholder,
+  textarea::placeholder { color: #7A8699; opacity: 1; }
+
+  .btn {
+    min-height: var(--ui-target);
+    padding: 11px 17px;
+    font-size: var(--ui-button);
+    line-height: 1.25;
+  }
+
+  .icon-button,
+  .pattern-grid button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .panel { padding: var(--ui-panel-pad); }
+  .panel-header { min-height: 42px; padding-bottom: 15px; }
+  .panel-header h2 { font-size: 18px; line-height: 1.3; }
+  .panel-header p { font-size: var(--ui-small); line-height: 1.5; }
+  .form-panel { gap: 18px; }
+  .form-grid { gap: 16px; }
+  .split-layout,
+  .two-panels { gap: 26px; }
+
+  .metric { min-height: 128px; padding: 20px; }
+  .metric span { font-size: var(--ui-micro); line-height: 1.35; }
+  .metric strong { font-size: 32px; line-height: 1.1; }
+
+  .count-pill,
+  .status-badge,
+  .purchase-status { font-size: var(--ui-micro); line-height: 1.25; }
+
+  .records-list,
+  .insight-list,
+  .compact-list { gap: 14px; }
+
+  .record-card {
+    gap: 10px;
+    padding: 19px;
+  }
+
+  .record-card strong { font-size: 17px; line-height: 1.35; }
+  .record-card span,
+  .record-card small,
+  .record-card p,
+  .insight span,
+  .compact-list span { font-size: var(--ui-small); line-height: 1.5; }
+
+  .insight,
+  .compact-list article { gap: 6px; padding: 15px; }
+  .bar-row { font-size: var(--ui-small); line-height: 1.35; }
+
+  .record-actions,
+  .order-action-grid { gap: 10px; }
+
+  .order-action-grid .btn {
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: var(--ui-button);
+  }
+
+  th,
+  td {
+    padding: 14px 12px;
+    font-size: var(--ui-small);
+    line-height: 1.45;
+  }
+
+  th { font-size: var(--ui-micro); }
+
+  .chart-head strong { font-size: 15px; }
+  .chart-head span { font-size: var(--ui-micro); }
+  .chart-label,
+  .chart-note,
+  .chart-value { font-size: var(--ui-micro); }
+
+  .premium-charts article > strong,
+  .mini-chart strong { font-size: 15px; line-height: 1.4; }
+
+  .empty-state,
+  .alert,
+  .dialog-context,
+  .form-hint,
+  .part-availability-hint { font-size: var(--ui-small); line-height: 1.55; }
+
+  .motion-setting { min-height: 68px; padding: 15px; }
+  .motion-setting small { font-size: var(--ui-micro); line-height: 1.45; }
+
+  #purchaseForm .purchase-builder-head strong { font-size: 18px; }
+  #purchaseForm .purchase-builder-head span,
+  .purchase-record-head > div span { font-size: var(--ui-small); line-height: 1.45; }
+  #purchaseForm .purchase-builder-actions .purchase-item-count { min-height: 34px; font-size: var(--ui-micro); }
+  #purchaseForm #addPurchaseItemBtn { min-height: var(--ui-target); font-size: var(--ui-button); }
+  #purchaseForm .purchase-column-head span,
+  .purchase-cell > span,
+  #purchaseForm .purchase-total small,
+  .purchase-record-summary small,
+  .purchase-record-items span { font-size: var(--ui-micro); line-height: 1.35; }
+  #purchaseForm .purchase-item input { min-height: var(--ui-target); font-size: var(--ui-control); }
+  #purchaseForm .purchase-cell-subtotal output,
+  .purchase-record-summary strong { font-size: var(--ui-small); }
+  #purchaseForm .purchase-item .icon-button { width: 44px; height: 44px; }
+
+  .quality-head span { font-size: var(--ui-micro); }
+  .quality-head h2 { font-size: 18px; }
+  .quality-head small,
+  .quality-columns h3 { font-size: var(--ui-small); line-height: 1.45; }
+  .quality-checklist { gap: 11px; }
+  .quality-checklist label { grid-template-columns: minmax(0, 1fr) 138px; min-height: 52px; padding: 8px 0; }
+  .quality-checklist label > span { font-size: var(--ui-small); line-height: 1.35; }
+  .quality-checklist select { min-height: 44px; padding: 9px 10px; font-size: var(--ui-small); }
+  .quality-certificate-grid span { font-size: var(--ui-small); line-height: 1.4; }
+  .quality-certificate-grid b { font-size: var(--ui-micro); }
+
+  body.public-portal-mode .pcfix-main { width: min(100%, 1320px); padding: 38px 28px 72px; }
+  .portal-public-brand strong { font-size: 24px; }
+  .portal-public-brand span { font-size: var(--ui-small); }
+  .portal-order-card { padding: 30px; }
+  .portal-hero-premium h2 { font-size: 30px; line-height: 1.25; }
+  .portal-order-card p,
+  .portal-detail,
+  .portal-history,
+  .portal-info-grid article { font-size: var(--ui-base); line-height: 1.55; }
+  .progress-orbit span,
+  .repair-timeline span { font-size: var(--ui-micro); line-height: 1.35; }
+  .repair-timeline span { min-height: 44px; }
+  .portal-canceled-notice span,
+  .portal-approval p { font-size: var(--ui-small); line-height: 1.5; }
+  .portal-approval h3 { font-size: 20px; }
+
+  .login-card::before,
+  .login-trust-line,
+  .priority-card span,
+  .priority-card small,
+  .status-editor span,
+  .pattern-toolbar span,
+  .status-evidence-box p,
+  .photo-chip figcaption,
+  .line-item span,
+  .history-list div,
+  .tracking-summary span,
+  .tracking-step small,
+  .portal-details span,
+  .portal-section-head span,
+  .portal-evidence-meta span,
+  .dialog-head span,
+  .form-hint span,
+  .mini-bar-row,
+  .mini-bar-row strong,
+  .mini-chip-row span,
+  .status-inline span,
+  .sla-line,
+  .sla-line strong,
+  .common-failures > span,
+  .portal-eyebrow { font-size: var(--ui-micro); line-height: 1.4; }
+
+  .part-chip,
+  .part-availability-hint,
+  .failure-chip,
+  .status { font-size: var(--ui-small); line-height: 1.4; }
+
+  .failure-chip { min-height: 38px; padding: 8px 12px; }
+  .part-chip button { min-width: 32px; min-height: 32px; }
+}
+
+@media screen and (max-width: 1180px) {
+  .pcfix-main { padding: 30px 26px 48px; }
+}
+
+@media screen and (max-width: 980px) {
+  .pcfix-shell { grid-template-columns: 1fr; }
+  .pcfix-sidebar { height: auto; }
+  .pcfix-nav button { padding: 12px 14px; }
+}
+
+@media screen and (max-width: 720px) {
+  .pcfix-main { padding: 24px 16px 42px; }
+  .pcfix-topbar { gap: 16px; }
+  .pcfix-topbar h1 { font-size: 30px; }
+  .panel { padding: 20px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .order-action-grid { grid-template-columns: 1fr; }
+  .record-actions .btn { flex: 1 1 150px; }
+  body.public-portal-mode .pcfix-main { padding: 28px 16px 52px; }
+  .portal-order-card { padding: 20px; }
+  .portal-hero-premium h2 { font-size: 24px; }
+}
+
+@media screen and (max-width: 460px) {
+  body {
+    --ui-base: 16px;
+    --ui-small: 14px;
+    --ui-micro: 13px;
+    --ui-label: 14px;
+    --ui-control: 16px;
+    --ui-button: 15px;
+    --ui-nav: 15px;
+    --ui-target: 48px;
+  }
+
+  .pcfix-nav { grid-template-columns: 1fr 1fr; }
+  .pcfix-nav button { text-align: center; }
+  .panel { padding: 18px; }
+  .quality-checklist label { grid-template-columns: 1fr; }
+}

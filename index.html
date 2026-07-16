@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-seguridad-calidad-20260716-05">
+    <meta name="pcfix-version" content="pcfix-legibilidad-20260716-06">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -385,6 +385,13 @@
                 <label>Azul principal<input id="themeBlue" type="color" value="#0B3B63"></label>
                 <label>Turquesa<input id="themeCyan" type="color" value="#20C7D8"></label>
               </div>
+              <label>Tamano de interfaz
+                <select id="interfaceDensity">
+                  <option value="comfortable" selected>Comodo</option>
+                  <option value="large">Amplio</option>
+                  <option value="compact">Compacto</option>
+                </select>
+              </label>
               <label class="motion-setting"><input id="motionEnabled" type="checkbox" checked><span><strong>Animaciones de interfaz</strong><small>Movimiento sutil para estados y confirmaciones.</small></span></label>
               <button class="btn primary" type="submit">Guardar configuracion</button>
             </form>

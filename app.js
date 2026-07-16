@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-seguridad-calidad-20260716-05";
+const PCFIX_FRONTEND_VERSION = "pcfix-legibilidad-20260716-06";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -254,6 +254,7 @@ function wireEvents() {
   $("loadAdminReportBtn").addEventListener("click", loadAdminReports);
   $("themeBlue").addEventListener("input", applyThemeFromInputs);
   $("themeCyan").addEventListener("input", applyThemeFromInputs);
+  $("interfaceDensity").addEventListener("change", applyThemeFromInputs);
   $("motionEnabled").addEventListener("change", applyThemeFromInputs);
   document.querySelectorAll("[data-reset]").forEach((button) => button.addEventListener("click", () => resetForm(button.dataset.reset)));
   renderCommonFailures();
@@ -1158,6 +1159,7 @@ async function saveSettings(event) {
       ...(state.settings.theme || {}),
       blue: $("themeBlue").value || "#0B3B63",
       cyan: $("themeCyan").value || "#20C7D8",
+      density: $("interfaceDensity").value || "comfortable",
       motionEnabled: $("motionEnabled").checked
     }
   });
@@ -1359,11 +1361,19 @@ function editWarranty(idValue) {
 function applyTheme(theme = {}) {
   if (theme.blue) document.documentElement.style.setProperty("--pcfix-blue", theme.blue);
   if (theme.cyan) document.documentElement.style.setProperty("--pcfix-cyan", theme.cyan);
+  const density = ["compact", "comfortable", "large"].includes(theme.density) ? theme.density : "comfortable";
+  document.body.classList.remove("ui-density-compact", "ui-density-comfortable", "ui-density-large");
+  document.body.classList.add(`ui-density-${density}`);
   document.body.classList.toggle("motion-disabled", theme.motionEnabled === false);
 }
 
 function applyThemeFromInputs() {
-  applyTheme({ blue: $("themeBlue").value, cyan: $("themeCyan").value, motionEnabled: $("motionEnabled").checked });
+  applyTheme({
+    blue: $("themeBlue").value,
+    cyan: $("themeCyan").value,
+    density: $("interfaceDensity").value,
+    motionEnabled: $("motionEnabled").checked
+  });
 }
 
 function showOrderForm(order = null) {
@@ -1829,6 +1839,7 @@ function hydrateSettings() {
   $("whatsappTemplate").value = state.settings.whatsappTemplate || "";
   $("themeBlue").value = state.settings.theme?.blue || "#0B3B63";
   $("themeCyan").value = state.settings.theme?.cyan || "#20C7D8";
+  $("interfaceDensity").value = state.settings.theme?.density || "comfortable";
   $("motionEnabled").checked = state.settings.theme?.motionEnabled !== false;
   applyTheme(state.settings.theme || {});
 }

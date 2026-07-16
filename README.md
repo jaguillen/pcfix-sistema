@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-seguridad-calidad-20260716-05`
+`pcfix-legibilidad-20260716-06`
 
 ## Que subir a GitHub
 
@@ -55,7 +55,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-seguridad-calidad-20260716-05
+pcfix-legibilidad-20260716-06
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -105,6 +105,9 @@ select count(*) from purchases where archived = false;
 - Animaciones de estado basadas en el logotipo original de PCFix, sin modificarlo.
 - Interfaz responsiva con jerarquia visual, color semantico y microinteracciones.
 - Control de animaciones desde Configuracion y compatibilidad con `prefers-reduced-motion`.
+- Escala tipografica comoda como valor predeterminado, con textos secundarios legibles y controles de 48 px.
+- Selector persistente de tamano de interfaz: Comodo, Amplio o Compacto.
+- Formularios, tablas, ordenes, compras, dashboard y portal adaptados a zoom y pantallas tactiles.
 
 ## Compras multiproducto
 
