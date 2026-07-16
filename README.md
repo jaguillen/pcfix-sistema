@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-modulos-premium-20260716-02`
+`pcfix-identidad-visual-20260716-03`
 
 ## Que subir a GitHub
 
@@ -49,7 +49,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-modulos-premium-20260716-02
+pcfix-identidad-visual-20260716-03
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -78,6 +78,14 @@ select count(*) from purchases where archived = false;
 - Control de concurrencia: avisa cuando otra persona modifico el registro antes de guardar.
 - Prioridad, fecha prometida, autorizacion, costo interno, ciclo de reparacion y alertas de atraso.
 - Pagos y saldo de orden se registran en una sola operacion atomica.
+
+## Identidad visual y portal
+
+- Seguimiento con seis etapas reales: 17%, 33%, 50%, 67%, 83% y 100% al entregar.
+- El estado cancelado se presenta como interrupcion y no como avance de reparacion.
+- Animaciones de estado basadas en el logotipo original de PCFix, sin modificarlo.
+- Interfaz responsiva con jerarquia visual, color semantico y microinteracciones.
+- Control de animaciones desde Configuracion y compatibilidad con `prefers-reduced-motion`.
 - Evidencias fotograficas optimizadas antes de enviarse.
 - Actualizacion automatica desde BD al volver a la ventana y cada 45 segundos cuando no hay formularios en uso.
 - Clientes y selectores ordenados alfabeticamente.

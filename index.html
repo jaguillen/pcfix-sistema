@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-modulos-premium-20260716-02">
+    <meta name="pcfix-version" content="pcfix-identidad-visual-20260716-03">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -12,9 +12,10 @@
   <body>
     <section id="loginScreen" class="login-screen">
       <form id="loginForm" class="login-card">
-        <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
+        <div class="login-brand-motion" aria-hidden="true"><span></span><img src="assets/logo-pcfix.png" alt=""></div>
         <h1>PCFix Comitan</h1>
-        <p>Sistema administrativo en linea conectado a BD.</p>
+        <p>Centro operativo conectado en tiempo real.</p>
+        <div class="login-trust-line"><i></i><span>Conexion segura con la base de datos</span></div>
         <label>Servidor<input id="loginServer" value="https://pcfix-backend.onrender.com" required></label>
         <label>Email<input id="loginEmail" type="email" value="admin@pcfix.local" required></label>
         <label>Password<input id="loginPassword" type="password" required></label>
@@ -26,10 +27,10 @@
     <div id="app" class="pcfix-shell hidden">
       <aside class="pcfix-sidebar">
         <div class="pcfix-brand">
-          <img src="assets/logo-pcfix.png" alt="PCFix Comitan">
+          <div class="brand-logo-motion"><span></span><img src="assets/logo-pcfix.png" alt="PCFix Comitan"></div>
           <div>
             <strong>PCFix Comitan</strong>
-            <span id="connectionLabel">BD en linea</span>
+            <span id="connectionLabel" class="connection-state">BD en linea</span>
           </div>
         </div>
         <nav id="nav" class="pcfix-nav">
@@ -51,6 +52,7 @@
       <main class="pcfix-main">
         <header class="pcfix-topbar">
           <div>
+            <span class="workspace-eyebrow">PCFix Operations</span>
             <h1 id="viewTitle">Panel</h1>
             <p id="viewSubtitle">Lectura directa desde Supabase/Postgres.</p>
           </div>
@@ -335,13 +337,17 @@
         </section>
 
         <section id="portalView" class="view">
+          <div class="portal-public-brand">
+            <div class="brand-logo-motion portal-brand-logo"><span></span><img src="assets/logo-pcfix.png" alt="PCFix Comitan"></div>
+            <div><strong>PCFix Comitan</strong><span>Seguimiento seguro de tu reparacion</span></div>
+          </div>
           <div class="split-layout">
             <form id="portalForm" class="panel form-panel">
               <div class="panel-header"><h2>Portal cliente</h2></div>
               <label>Folio de orden o WhatsApp<input id="portalFolio" placeholder="PCF-2026-0001 o 9631234567" required></label>
               <button class="btn primary" type="submit">Consultar</button>
             </form>
-            <section class="panel"><div id="portalResult" class="portal-result"></div></section>
+            <section class="portal-result-shell"><div id="portalResult" class="portal-result"></div></section>
           </div>
         </section>
 
@@ -357,6 +363,7 @@
                 <label>Azul principal<input id="themeBlue" type="color" value="#0B3B63"></label>
                 <label>Turquesa<input id="themeCyan" type="color" value="#20C7D8"></label>
               </div>
+              <label class="motion-setting"><input id="motionEnabled" type="checkbox" checked><span><strong>Animaciones de interfaz</strong><small>Movimiento sutil para estados y confirmaciones.</small></span></label>
               <button class="btn primary" type="submit">Guardar configuracion</button>
             </form>
             <section class="panel">

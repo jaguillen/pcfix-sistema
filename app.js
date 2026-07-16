@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-modulos-premium-20260716-02";
+const PCFIX_FRONTEND_VERSION = "pcfix-identidad-visual-20260716-03";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -9,6 +9,7 @@ const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN
 const dateFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const dateTimeFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short" });
 const orderStatuses = ["Recibido", "Diagnostico", "Esperando pieza", "En reparacion", "Listo", "Entregado", "Cancelado"];
+const repairProgressStatuses = ["Recibido", "Diagnostico", "Esperando pieza", "En reparacion", "Listo", "Entregado"];
 const purchaseStatuses = ["Cotizando", "Pedido", "Recibido", "Cancelado"];
 const categories = [
   "Pantallas y display",
@@ -239,6 +240,7 @@ function wireEvents() {
   $("loadAdminReportBtn").addEventListener("click", loadAdminReports);
   $("themeBlue").addEventListener("input", applyThemeFromInputs);
   $("themeCyan").addEventListener("input", applyThemeFromInputs);
+  $("motionEnabled").addEventListener("change", applyThemeFromInputs);
   document.querySelectorAll("[data-reset]").forEach((button) => button.addEventListener("click", () => resetForm(button.dataset.reset)));
   renderCommonFailures();
   renderPatternGrid();
@@ -1083,7 +1085,8 @@ async function saveSettings(event) {
     theme: {
       ...(state.settings.theme || {}),
       blue: $("themeBlue").value || "#0B3B63",
-      cyan: $("themeCyan").value || "#20C7D8"
+      cyan: $("themeCyan").value || "#20C7D8",
+      motionEnabled: $("motionEnabled").checked
     }
   });
   showAlert("Configuracion guardada en BD.", "ok");
@@ -1257,10 +1260,11 @@ function editWarranty(idValue) {
 function applyTheme(theme = {}) {
   if (theme.blue) document.documentElement.style.setProperty("--pcfix-blue", theme.blue);
   if (theme.cyan) document.documentElement.style.setProperty("--pcfix-cyan", theme.cyan);
+  document.body.classList.toggle("motion-disabled", theme.motionEnabled === false);
 }
 
 function applyThemeFromInputs() {
-  applyTheme({ blue: $("themeBlue").value, cyan: $("themeCyan").value });
+  applyTheme({ blue: $("themeBlue").value, cyan: $("themeCyan").value, motionEnabled: $("motionEnabled").checked });
 }
 
 function showOrderForm(order = null) {
@@ -1663,6 +1667,7 @@ function hydrateSettings() {
   $("whatsappTemplate").value = state.settings.whatsappTemplate || "";
   $("themeBlue").value = state.settings.theme?.blue || "#0B3B63";
   $("themeCyan").value = state.settings.theme?.cyan || "#20C7D8";
+  $("motionEnabled").checked = state.settings.theme?.motionEnabled !== false;
   applyTheme(state.settings.theme || {});
 }
 
@@ -1697,7 +1702,7 @@ async function searchPortal(event) {
 function portalWelcome() {
   return `
     <div class="portal-premium portal-empty">
-      <div class="status-visual received"><div class="device-animation"><span></span><i></i></div></div>
+      <div class="status-visual received"><div class="pcfix-status-emblem"><span></span><img src="assets/logo-pcfix.png" alt=""></div></div>
       <h2>Consulta tu reparacion</h2>
       <p>Ingresa tu folio de orden o tu numero de WhatsApp para ver el seguimiento.</p>
     </div>`;
@@ -1708,21 +1713,23 @@ function renderPortalOrder(order, client = {}) {
   const progress = getStatusProgress(order.status);
   const parts = order.suppliedParts || [];
   const history = order.statusHistory || [];
+  const canceled = order.status === "Cancelado";
+  const statusIndex = repairProgressStatuses.indexOf(order.status);
   return `
       <div class="portal-premium portal-order-card">
         <div class="portal-hero-premium">
           <div class="status-visual ${statusClass(order.status)}">
-            <div class="device-animation"><span></span><i></i></div>
+            <div class="pcfix-status-emblem"><span></span><img src="assets/logo-pcfix.png" alt="Animacion de estado PCFix"></div>
           </div>
           <div>
             <span class="portal-eyebrow">Seguimiento de reparacion</span>
             <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
             <p>${escapeHtml(client.name || "Cliente")} | ${escapeHtml(order.status || "")}</p>
           </div>
-          <strong>${progress}%</strong>
+          <div class="progress-orbit ${canceled ? "is-canceled" : ""}" style="--progress:${progress}" role="progressbar" aria-label="Avance de reparacion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><strong>${progress}%</strong><span>${canceled ? "Interrumpido" : "Avance"}</span></div>
         </div>
-        <div class="portal-progress"><i style="width:${progress}%"></i></div>
-        <div class="timeline">${orderStatuses.map((s) => `<span class="${orderStatuses.indexOf(s) <= orderStatuses.indexOf(order.status) ? "done" : ""}">${escapeHtml(s)}</span>`).join("")}</div>
+        ${canceled ? `<div class="portal-canceled-notice"><strong>Servicio cancelado</strong><span>El progreso se detuvo. Contacta a PCFix para cualquier aclaracion.</span></div>` : `<div class="portal-progress" aria-hidden="true"><i style="width:${progress}%"></i></div>`}
+        <div class="timeline repair-timeline">${repairProgressStatuses.map((s, index) => `<span class="${index <= statusIndex ? "done" : ""} ${index === statusIndex ? "current" : ""}"><i></i>${escapeHtml(s)}</span>`).join("")}</div>
         <div class="portal-detail">
           <strong>Garantia</strong><span>${Number(order.warrantyDays || 90)} dias</span>
           <strong>Ultima actualizacion</strong><span>${escapeHtml(formatDate(order.updatedAt || order.updated_at || ""))}</span>
@@ -1754,9 +1761,9 @@ function printPortalOrder() {
 }
 
 function getStatusProgress(status = "") {
-  const index = orderStatuses.indexOf(status);
-  if (index < 0) return 12;
-  return Math.round(((index + 1) / orderStatuses.length) * 100);
+  const index = repairProgressStatuses.indexOf(status);
+  if (index < 0) return 0;
+  return Math.round(((index + 1) / repairProgressStatuses.length) * 100);
 }
 
 async function loadAdminReports() {
@@ -1913,6 +1920,7 @@ function printOrderDocument(order, options = {}) {
 
 function statusClass(status = "") {
   const value = normalize(status);
+  if (value.includes("cancelado")) return "canceled";
   if (value.includes("listo")) return "ready";
   if (value.includes("reparacion")) return "repair";
   if (value.includes("pieza")) return "waiting";
