@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-legibilidad-20260716-06`
+`pcfix-conectividad-20260716-08`
 
 ## Que subir a GitHub
 
@@ -55,7 +55,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-legibilidad-20260716-06
+pcfix-conectividad-20260716-08
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -65,7 +65,7 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-seguridad-calidad-20260716-05
+pcfix-backend-conectividad-20260716-08
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:
@@ -93,6 +93,10 @@ select count(*) from purchases where archived = false;
 - Datos internos filtrados por rol y credenciales de desbloqueo cifradas, auditadas y eliminadas al cerrar la orden.
 - RLS habilitado y acceso directo de los roles publicos de Supabase revocado solo en las tablas de PCFix.
 - Evidencias en bucket privado, con validacion de tipo, limite de 3 MB y enlaces temporales.
+- La orden se confirma primero en PostgreSQL y las evidencias se adjuntan despues, sin perder la orden si Storage falla.
+- Fotografias optimizadas y enviadas individualmente para evitar cortes por tamano de solicitud.
+- Errores de Render, CORS y credenciales de Storage se muestran con diagnostico util en lugar de `Failed to fetch`.
+- Login protegido contra fallos de PostgreSQL y CORS habilitado para los dos dominios de despliegue PCFix en Render.
 - Aprobacion o rechazo digital del presupuesto con trazabilidad de fecha, cliente y sesion.
 - Checklist de recepcion y control final; una orden no puede pasar a Listo o Entregado con pruebas pendientes.
 - Etiqueta imprimible por orden, historial por cliente, calidad de refacciones y trazabilidad por lote/serie/proveedor.

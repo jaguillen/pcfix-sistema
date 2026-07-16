@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-legibilidad-20260716-06";
+const PCFIX_FRONTEND_VERSION = "pcfix-conectividad-20260716-08";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -291,9 +291,9 @@ function startLiveRefresh() {
 async function login(event) {
   event.preventDefault();
   showLoginAlert("Conectando con backend...", "ok");
+  const baseUrl = $("loginServer").value.trim().replace(/\/$/, "");
   try {
     setBusy(true);
-    const baseUrl = $("loginServer").value.trim().replace(/\/$/, "");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     const response = await fetch(`${baseUrl}/api/auth/login`, {
@@ -313,7 +313,12 @@ async function login(event) {
     $("app").classList.remove("hidden");
     await loadStateFromDb();
   } catch (error) {
-    const message = error.name === "AbortError" ? "El backend no respondio a tiempo." : error.message;
+    const isNetworkError = error instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(error.message || "");
+    const message = error.name === "AbortError"
+      ? `El backend no respondio a tiempo. Revisa ${baseUrl}/api/health.`
+      : isNetworkError
+        ? `No hay comunicacion con ${baseUrl}. Abre ${baseUrl}/api/health y confirma CORS_ORIGIN en Render.`
+        : error.message;
     showLoginAlert(`No se pudo entrar: ${message}`, "error");
   } finally {
     setBusy(false);
@@ -331,17 +336,25 @@ function logout() {
 
 async function api(path, options = {}) {
   if (!session.token) throw new Error("Sesion requerida");
-  const response = await fetch(`${session.baseUrl}${path}`, {
-    cache: "no-store",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-      Pragma: "no-cache",
-      Authorization: `Bearer ${session.token}`,
-      ...(options.headers || {})
-    }
-  });
+  let response;
+  try {
+    response = await fetch(`${session.baseUrl}${path}`, {
+      cache: "no-store",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
+        Authorization: `Bearer ${session.token}`,
+        ...(options.headers || {})
+      }
+    });
+  } catch (cause) {
+    const error = new Error(`No se pudo conectar con el backend al procesar ${path}. Verifica que Render este activo y que CORS_ORIGIN corresponda a este sitio.`);
+    error.code = "network_error";
+    error.cause = cause;
+    throw error;
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(payload.error || payload.message || "Error de backend");
@@ -957,8 +970,8 @@ async function saveOrder(event) {
   const total = Number($("orderTotal").value || 0);
   const deposit = status === "Entregado" ? total : Number($("orderDeposit").value || 0);
   const orderId = $("orderId").value || id("ord");
-  const storageFallback = await persistEvidencePhotos(orderId);
-  const savedOrder = await saveRecord("order", {
+  const pendingEvidenceCount = currentEvidencePhotos.filter((photo) => photo.dataUrl && !photo.path).length;
+  let savedOrder = await saveRecord("order", {
     id: orderId,
     folio: existing?.folio || nextOrderFolio(),
     clientId: $("orderClient").value,
@@ -989,21 +1002,40 @@ async function saveOrder(event) {
     intakeChecklist: readQualityChecklist("intakeChecklist"),
     finalChecklist: readQualityChecklist("finalChecklist"),
     completedAt: status === "Entregado" ? (existing?.completedAt || now()) : "",
-    statusEvidencePhotos: currentEvidencePhotos,
+    statusEvidencePhotos: evidenceMetadata(),
     parts: selectedParts,
     suppliedParts,
     createdAt: existing?.createdAt || now(),
     updatedAt: now()
   });
   $("orderId").value = savedOrder.id || orderId;
+  const postSaveWarnings = [];
   if (pendingSuggestedPurchase) {
-    await createSuggestedPurchaseRecord({ ...pendingSuggestedPurchase, orderId: savedOrder.id || orderId });
-    pendingSuggestedPurchase = null;
+    try {
+      await createSuggestedPurchaseRecord({ ...pendingSuggestedPurchase, orderId: savedOrder.id || orderId });
+      pendingSuggestedPurchase = null;
+    } catch (error) {
+      postSaveWarnings.push(`la solicitud de compra no se creo: ${error.message}`);
+    }
+  }
+  if (pendingEvidenceCount) {
+    try {
+      await persistEvidencePhotos(savedOrder.id || orderId);
+      savedOrder = await saveRecord("order", {
+        ...savedOrder,
+        statusEvidencePhotos: evidenceMetadata(),
+        updatedAt: now()
+      });
+    } catch (error) {
+      postSaveWarnings.push(`las fotografias no se adjuntaron: ${error.message}`);
+    }
+  }
+  if (postSaveWarnings.length) {
+    showAlert(`Orden ${savedOrder.folio || ""} guardada en BD; ${postSaveWarnings.join("; ")}. Corrige la conexion y vuelve a guardar para reintentar.`, "error");
+    return;
   }
   hideOrderForm();
-  showAlert(storageFallback
-    ? "Orden guardada. Configura Storage privado para sacar las fotografias de PostgreSQL."
-    : "Orden y evidencias guardadas de forma segura.", "ok");
+  showAlert(pendingEvidenceCount ? "Orden y evidencias guardadas de forma segura." : "Orden guardada correctamente en BD.", "ok");
 }
 
 async function savePurchase(event) {
@@ -1657,7 +1689,7 @@ async function fileToPhoto(file) {
     element.onerror = () => reject(new Error(`No se pudo procesar ${file.name}.`));
     element.src = source;
   });
-  const maxSide = 1600;
+  const maxSide = 1280;
   const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
@@ -1668,7 +1700,7 @@ async function fileToPhoto(file) {
     id: id("pho"),
     name: file.name,
     type: "image/jpeg",
-    dataUrl: canvas.toDataURL("image/jpeg", 0.82),
+    dataUrl: canvas.toDataURL("image/jpeg", 0.72),
     width: canvas.width,
     height: canvas.height,
     at: now()
@@ -1691,26 +1723,25 @@ function photoSource(photo = {}) {
 async function persistEvidencePhotos(orderId) {
   const inlinePhotos = currentEvidencePhotos.filter((photo) => photo.dataUrl && !photo.path);
   currentEvidencePhotos = currentEvidencePhotos.map(({ url, ...photo }) => photo);
-  if (!inlinePhotos.length) return false;
-  try {
-    const uploaded = [];
-    for (let index = 0; index < inlinePhotos.length; index += 6) {
-      const result = await api("/api/files/evidence", {
-        method: "POST",
-        body: JSON.stringify({
-          orderId,
-          files: inlinePhotos.slice(index, index + 6).map((photo) => ({ id: photo.id, name: photo.name, type: photo.type, dataUrl: photo.dataUrl }))
-        })
-      });
-      uploaded.push(...(result.photos || []));
-    }
-    const uploadedById = new Map(uploaded.map((photo) => [photo.id, photo]));
-    currentEvidencePhotos = currentEvidencePhotos.map((photo) => uploadedById.get(photo.id) || photo);
-    return false;
-  } catch (error) {
-    if (error.code === "storage_not_configured" || error.status === 503) return true;
-    throw error;
+  if (!inlinePhotos.length) return [];
+  const uploaded = [];
+  for (const photo of inlinePhotos) {
+    const result = await api("/api/files/evidence", {
+      method: "POST",
+      body: JSON.stringify({
+        orderId,
+        files: [{ id: photo.id, name: photo.name, type: photo.type, dataUrl: photo.dataUrl }]
+      })
+    });
+    uploaded.push(...(result.photos || []));
   }
+  const uploadedById = new Map(uploaded.map((photo) => [photo.id, photo]));
+  currentEvidencePhotos = currentEvidencePhotos.map((photo) => uploadedById.get(photo.id) || photo);
+  return uploaded;
+}
+
+function evidenceMetadata(photos = currentEvidencePhotos) {
+  return photos.filter((photo) => photo?.path).map(({ dataUrl, url, ...photo }) => photo);
 }
 
 function removeEvidencePhoto(photoId) {

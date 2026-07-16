@@ -18,7 +18,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGIN
-        value: https://pcfix-sistema.onrender.com
+        value: https://pcfix-sistema.onrender.com,https://pcfixcomitan.onrender.com
       - key: SUPABASE_URL
         value: https://yafxbmprwjxiuemhlqso.supabase.co
       - key: SUPABASE_SERVICE_ROLE_KEY

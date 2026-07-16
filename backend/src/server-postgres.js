@@ -15,7 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-seguridad-calidad-20260716-05";
+const backendVersion = "pcfix-backend-conectividad-20260716-08";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -31,10 +31,22 @@ const sensitiveDataKey = createHash("sha256").update(sensitiveDataSecret).digest
 const supabaseUrl = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const evidenceBucket = process.env.SUPABASE_EVIDENCE_BUCKET || "pcfix-evidence";
-const productionCorsOrigins = String(process.env.CORS_ORIGIN || "https://pcfix-sistema.onrender.com")
+const productionCorsOrigins = String(process.env.CORS_ORIGIN || "https://pcfix-sistema.onrender.com,https://pcfixcomitan.onrender.com")
   .split(",")
-  .map((origin) => origin.trim())
+  .map((origin) => origin.trim().replace(/\/$/, ""))
   .filter(Boolean);
+
+function isAllowedOrigin(origin) {
+  try {
+    const normalized = String(origin || "").replace(/\/$/, "");
+    if (productionCorsOrigins.includes(normalized)) return true;
+    const url = new URL(normalized);
+    if (["localhost", "127.0.0.1"].includes(url.hostname)) return true;
+    return url.protocol === "https:" && ["pcfix-sistema.onrender.com", "pcfixcomitan.onrender.com"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 const pool = new Pool({
   connectionString: databaseUrl,
@@ -140,7 +152,10 @@ async function ensureEvidenceBucket() {
     headers: storageHeaders()
   });
   if (current.ok) return true;
-  if (current.status !== 404) throw new Error(`No se pudo consultar Storage (${current.status})`);
+  if ([401, 403].includes(current.status)) {
+    throw businessError("Supabase Storage rechazo la clave. Revisa SUPABASE_SERVICE_ROLE_KEY en el backend de Render.", "storage_credentials_rejected", 502);
+  }
+  if (current.status !== 404) throw businessError(`No se pudo consultar Supabase Storage (${current.status})`, "storage_unavailable", 502);
   const created = await fetch(`${supabaseUrl}/storage/v1/bucket`, {
     method: "POST",
     headers: storageHeaders({ "Content-Type": "application/json" }),
@@ -152,7 +167,9 @@ async function ensureEvidenceBucket() {
       allowed_mime_types: ["image/jpeg", "image/png", "image/webp"]
     })
   });
-  if (!created.ok && created.status !== 409) throw new Error(`No se pudo crear bucket privado (${created.status})`);
+  if (!created.ok && created.status !== 409) {
+    throw businessError(`No se pudo crear el bucket privado de evidencias (${created.status})`, "storage_bucket_failed", 502);
+  }
   return true;
 }
 
@@ -1487,8 +1504,7 @@ app.set("trust proxy", 1);
 app.use(cors({
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    const developmentOrigin = process.env.NODE_ENV !== "production" && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-    if (productionCorsOrigins.includes(origin) || developmentOrigin) return callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
     return callback(businessError("Origen no permitido", "cors_origin_denied", 403));
   },
   methods: ["GET", "POST", "OPTIONS"],
@@ -1515,6 +1531,7 @@ app.get(["/", "/health", "/api/health"], (_req, res) => res.json({
   login: "/api/auth/login",
   health: "/api/health",
   stability: "/api/stability",
+  corsOrigins: productionCorsOrigins,
   at: now()
 }));
 
@@ -1541,15 +1558,19 @@ app.get("/api/stability", requireAuth, requireRole("admin", "manager"), async (_
   });
 });
 
-app.post("/api/auth/login", loginLimiter, async (req, res) => {
-  const email = String(req.body?.email || "").toLowerCase();
-  const result = await query("SELECT * FROM users WHERE email = $1 AND active = TRUE", [email]);
-  const user = result.rows[0];
-  if (!user || !(await bcrypt.compare(String(req.body?.password || ""), user.password_hash))) {
-    return res.status(401).json({ error: "Credenciales invalidas" });
+app.post("/api/auth/login", loginLimiter, async (req, res, next) => {
+  try {
+    const email = String(req.body?.email || "").toLowerCase();
+    const result = await query("SELECT * FROM users WHERE email = $1 AND active = TRUE", [email]);
+    const user = result.rows[0];
+    if (!user || !(await bcrypt.compare(String(req.body?.password || ""), user.password_hash))) {
+      return res.status(401).json({ error: "Credenciales invalidas" });
+    }
+    await audit(user.id, "login", "user", user.id, "Inicio de sesion");
+    res.json({ token: signToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  } catch (error) {
+    next(error);
   }
-  await audit(user.id, "login", "user", user.id, "Inicio de sesion");
-  res.json({ token: signToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
 app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
@@ -2414,23 +2435,27 @@ app.post("/api/files/base64", requireAuth, requireRole("admin", "manager", "tech
   res.status(410).json({ error: "Carga evidencias mediante /api/files/evidence; el almacenamiento base64 fue retirado." });
 });
 
-app.post("/api/files/evidence", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
-  if (!storageConfigured()) {
-    return res.status(503).json({
-      error: "Storage privado no configurado",
-      code: "storage_not_configured",
-      required: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
-    });
+app.post("/api/files/evidence", requireAuth, requireRole("admin", "manager", "technician"), async (req, res, next) => {
+  try {
+    if (!storageConfigured()) {
+      return res.status(503).json({
+        error: "Storage privado no configurado",
+        code: "storage_not_configured",
+        required: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+      });
+    }
+    const orderId = String(req.body?.orderId || "").trim();
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    if (!orderId) return res.status(400).json({ error: "orderId requerido" });
+    if (!files.length || files.length > 6) return res.status(400).json({ error: "Adjunta entre 1 y 6 fotografias por carga" });
+    await ensureEvidenceBucket();
+    const photos = [];
+    for (const file of files) photos.push(await uploadEvidencePhoto(orderId, file));
+    await audit(req.user.sub, "evidence_upload", "order", orderId, `${photos.length} archivo(s)`);
+    res.status(201).json({ photos });
+  } catch (error) {
+    next(error);
   }
-  const orderId = String(req.body?.orderId || "").trim();
-  const files = Array.isArray(req.body?.files) ? req.body.files : [];
-  if (!orderId) return res.status(400).json({ error: "orderId requerido" });
-  if (!files.length || files.length > 6) return res.status(400).json({ error: "Adjunta entre 1 y 6 fotografias por carga" });
-  await ensureEvidenceBucket();
-  const photos = [];
-  for (const file of files) photos.push(await uploadEvidencePhoto(orderId, file));
-  await audit(req.user.sub, "evidence_upload", "order", orderId, `${photos.length} archivo(s)`);
-  res.status(201).json({ photos });
 });
 
 app.get("/api/whatsapp/webhook", (req, res) => {
