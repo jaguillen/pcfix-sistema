@@ -12,7 +12,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-bd-directa-20260715-06";
+const backendVersion = "pcfix-backend-bd-directa-20260715-07";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -952,39 +952,66 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.get("/api/public/orders/:folio", async (req, res) => {
-  const folio = String(req.params.folio || "").toLowerCase();
+  const lookup = String(req.params.folio || "").trim();
+  const folio = lookup.toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
+  const digits = lookup.replace(/\D/g, "");
   const normalizedResult = trackingCode
     ? await query(
-        "SELECT o.*, c.name AS client_name FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
+        "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
         [folio, trackingCode]
       )
+    : digits.length >= 8
+      ? await query(
+          `SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email
+           FROM service_orders o
+           LEFT JOIN clients c ON c.id = o.client_id
+           WHERE o.archived = FALSE
+             AND regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g') LIKE $1
+           ORDER BY o.updated_at DESC LIMIT 1`,
+          [`%${digits.slice(-10)}%`]
+        )
     : await query(
-        "SELECT o.*, c.name AS client_name FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 ORDER BY o.updated_at DESC LIMIT 1",
+        "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 ORDER BY o.updated_at DESC LIMIT 1",
         [folio]
       );
   if (normalizedResult.rows[0]) {
     const row = normalizedResult.rows[0];
     const order = row.raw_data || {};
+    const publicParts = (Array.isArray(order.suppliedParts) ? order.suppliedParts : []).map((part) => ({
+      part: part.part || part.partName || "Refaccion",
+      qty: Math.max(1, asNumber(part.qty || 1))
+    }));
     return res.json({
+      ok: true,
       order: {
+        id: row.id,
         folio: row.folio,
         status: row.status,
         device: row.device,
+        technician: row.technician || order.technician || "",
+        serial: row.serial || order.serial || "",
         issue: row.issue,
         notes: row.notes,
         physicalState: row.physical_state,
+        accessories: row.accessories || order.accessories || "",
         warrantyDays: row.warranty_days,
         warrantyTerms: row.warranty_terms,
         total: row.total,
         deposit: row.deposit,
+        paid: row.paid,
         trackingCode: row.tracking_code,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         statusHistory: order.statusHistory || row.status_history || [],
-        statusEvidencePhotos: order.statusEvidencePhotos || row.status_evidence_photos || []
+        statusEvidencePhotos: order.statusEvidencePhotos || row.status_evidence_photos || [],
+        suppliedParts: publicParts
       },
-      client: { name: row.client_name || "Cliente" }
+      client: {
+        name: row.client_name || "Cliente",
+        phone: row.client_phone || "",
+        email: row.client_email || ""
+      }
     });
   }
   res.status(404).json({ error: "Orden no encontrada" });

@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-08";
+const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-09";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -74,6 +74,8 @@ let busy = false;
 let currentEvidencePhotos = [];
 let currentSelectedParts = [];
 let currentAdminReport = null;
+let currentPortalOrder = null;
+let currentPortalClient = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -1303,11 +1305,13 @@ function hydrateSettings() {
 
 async function searchPortal(event) {
   event.preventDefault();
-  const folio = $("portalFolio").value.trim();
-  if (!folio) return;
+  const lookup = $("portalFolio").value.trim();
+  if (!lookup) return;
   $("portalResult").innerHTML = empty("Consultando BD...");
+  currentPortalOrder = null;
+  currentPortalClient = null;
   try {
-    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(folio)}?t=${Date.now()}`, {
+    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(lookup)}?t=${Date.now()}`, {
       cache: "no-store",
       headers: { "Cache-Control": "no-store", Pragma: "no-cache" }
     });
@@ -1318,6 +1322,9 @@ async function searchPortal(event) {
     }
     const order = payload.order;
     const client = payload.client || {};
+    currentPortalOrder = order;
+    currentPortalClient = client;
+    const delivered = order.status === "Entregado";
     $("portalResult").innerHTML = `
       <div class="timeline-card portal-premium">
         <div class="status-visual ${statusClass(order.status)}">
@@ -1331,10 +1338,19 @@ async function searchPortal(event) {
           <strong>Ultima actualizacion</strong><span>${escapeHtml(formatDate(order.updatedAt || order.updated_at || ""))}</span>
         </div>
         ${(order.statusEvidencePhotos || []).length ? `<div class="photo-strip readonly">${(order.statusEvidencePhotos || []).slice(0, 6).map((photo) => `<figure><img src="${photo.dataUrl}" alt="${escapeHtml(photo.name || "Evidencia")}"></figure>`).join("")}</div>` : ""}
+        ${delivered ? `<div class="record-actions"><button class="btn primary" type="button" onclick="printPortalOrder()">Descargar PDF</button></div>` : ""}
       </div>`;
   } catch (error) {
     $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
   }
+}
+
+function printPortalOrder() {
+  if (!currentPortalOrder) {
+    showAlert("Primero consulta una orden entregada.", "error");
+    return;
+  }
+  printOrderDocument(currentPortalOrder, { context: "delivery", customerCopy: true, client: currentPortalClient || {} });
 }
 
 async function loadAdminReports() {
@@ -1411,15 +1427,24 @@ function printOrderById(orderId) {
 }
 
 function printOrderDocument(order, options = {}) {
-  const client = getClient(order.clientId) || {};
+  const client = options.client || getClient(order.clientId) || {};
   const parts = order.suppliedParts || [];
   const isDelivery = options.context === "delivery" || order.status === "Entregado";
+  const customerCopy = Boolean(options.customerCopy);
   const documentTitle = "Orden de servicio";
   const conditions = order.physicalState || order.notes || "";
   const accessories = order.accessories || "Sin accesorios registrados";
   const partsRows = parts.length
-    ? parts.map((part) => `<tr><td>${escapeHtml(part.part || "")}</td><td>${escapeHtml(part.qty || 1)}</td><td>${money.format(Number(part.totalCost ?? part.cost ?? 0))}</td></tr>`).join("")
-    : `<tr><td colspan="3">Sin refacciones registradas</td></tr>`;
+    ? parts.map((part) => customerCopy
+      ? `<tr><td>${escapeHtml(part.part || "")}</td><td>${escapeHtml(part.qty || 1)}</td></tr>`
+      : `<tr><td>${escapeHtml(part.part || "")}</td><td>${escapeHtml(part.qty || 1)}</td><td>${money.format(Number(part.totalCost ?? part.cost ?? 0))}</td></tr>`
+    ).join("")
+    : `<tr><td colspan="${customerCopy ? 2 : 3}">Sin refacciones registradas</td></tr>`;
+  const partsHeader = customerCopy
+    ? "<tr><th>Pieza</th><th>Cant.</th></tr>"
+    : "<tr><th>Pieza</th><th>Cant.</th><th>Costo</th></tr>";
+  const technicianName = order.technician || "Tecnico PCFix";
+  const clientName = client.name || "Cliente";
   const popup = window.open("", "_blank", "width=920,height=900");
   if (!popup) {
     showAlert("El navegador bloqueo la ventana de PDF. Permite ventanas emergentes para imprimir.", "error");
@@ -1460,9 +1485,9 @@ function printOrderDocument(order, options = {}) {
         <div class="box"><h2>Condiciones del equipo</h2><p>${escapeHtml(conditions || "Sin condiciones registradas")}</p></div>
         <div class="box"><h2>Accesorios recibidos</h2><p>${escapeHtml(accessories)}</p></div>
       </section>
-      <section class="box"><h2>Refacciones utilizadas</h2><table><thead><tr><th>Pieza</th><th>Cant.</th><th>Costo</th></tr></thead><tbody>${partsRows}</tbody></table></section>
+      <section class="box"><h2>Refacciones utilizadas</h2><table><thead>${partsHeader}</thead><tbody>${partsRows}</tbody></table></section>
       <section class="grid"><div class="box"><h2>Garantia</h2><p>${Number(order.warrantyDays || 90)} dias</p><p class="muted">${escapeHtml(order.warrantyTerms || defaultWarrantyTerms())}</p></div><div class="box"><h2>Importe</h2><p class="total">${money.format(Number(order.total || 0))}</p><p>Anticipo/pagado: ${money.format(getPaid(order))}</p><p>Saldo: ${money.format(getBalance(order))}</p></div></section>
-      ${isDelivery ? `<section class="grid"><div><div class="signature"></div><p class="signature-label">Firma de entrega PCFix</p></div><div><div class="signature"></div><p class="signature-label">Firma de conformidad del cliente</p></div></section>` : ""}
+      ${isDelivery ? `<section class="grid"><div><div class="signature"></div><p class="signature-label">${escapeHtml(technicianName)}</p></div><div><div class="signature"></div><p class="signature-label">${escapeHtml(clientName)}</p></div></section>` : ""}
       <footer>PCFix Comitan | La solucion a tus problemas | Documento generado desde informacion registrada en la base de datos.</footer>
       </div></section>
     </main></body></html>
@@ -1668,6 +1693,7 @@ Object.assign(window, {
   removeEvidencePhoto,
   removeSelectedOrderPart,
   addCommonFailure,
+  printPortalOrder,
   togglePatternPoint,
   removePurchaseItemRow,
   printOrderById
