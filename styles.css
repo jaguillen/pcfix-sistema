@@ -2567,11 +2567,55 @@ label {
 }
 .record-card strong { color: #111827; font-size: 17px; }
 .record-card span, .record-card small { color: #667085; }
+.order-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+.order-card-head > div {
+  display: grid;
+  gap: 5px;
+}
+.status-badge {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: #EEF4FF;
+  color: var(--pcfix-blue);
+  font-size: 12px;
+  font-weight: 900;
+}
+.status-badge.ready,
+.status-badge.delivered {
+  background: #ECFDF3;
+  color: #067647;
+}
+.status-badge.waiting {
+  background: #FFFAEB;
+  color: #B54708;
+}
+.status-badge.repair,
+.status-badge.diagnostic {
+  background: rgba(32, 199, 216, .14);
+  color: var(--pcfix-blue);
+}
 .record-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
+}
+.order-action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.order-action-grid .btn {
+  min-height: 38px;
+  padding: 8px 10px;
+  font-size: 13px;
 }
 .count-pill {
   display: inline-flex;
@@ -2736,6 +2780,37 @@ label {
   min-height: 38px;
   padding: 8px 10px;
 }
+.common-failures {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--pcfix-border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #FBFDFF;
+}
+.common-failures > span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 900;
+}
+.failure-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.failure-chip {
+  border: 1px solid rgba(32, 199, 216, .32);
+  border-radius: 999px;
+  padding: 8px 11px;
+  background: #fff;
+  color: var(--pcfix-blue);
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.failure-chip:hover {
+  background: rgba(32, 199, 216, .12);
+}
 .form-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2863,6 +2938,7 @@ label {
   .split-layout, .two-panels, .metrics-grid, .premium-grid, .charts-grid { grid-template-columns: 1fr; }
   .purchase-item { grid-template-columns: 1fr; }
   .premium-picker .inline-field,
-  .status-inline { grid-template-columns: 1fr; }
+  .status-inline,
+  .order-action-grid { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
 }

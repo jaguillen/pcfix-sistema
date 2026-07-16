@@ -12,7 +12,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-bd-directa-20260715-05";
+const backendVersion = "pcfix-backend-bd-directa-20260715-06";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -531,6 +531,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
         ]
       );
     }
+    await applyOrderInventoryEffects(data, Boolean(archived || data.archived), updated);
     return;
   }
   if (type === "purchase") {
@@ -713,6 +714,75 @@ async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
         }, false, order.createdAt || timestamp, timestamp);
       }
     }
+  }
+}
+
+async function applyOrderInventoryEffects(order, archived = false, timestamp = now()) {
+  if (!order?.id) return;
+  const previous = await query(
+    "SELECT * FROM inventory_movements WHERE ref_id = $1 AND type = 'salida_orden'",
+    [order.id]
+  );
+  for (const movement of previous.rows) {
+    if (!movement.item_id) continue;
+    const itemResult = await query("SELECT * FROM inventory_items WHERE id = $1 LIMIT 1", [movement.item_id]);
+    const item = itemResult.rows[0];
+    if (!item) continue;
+    const restoredStock = Math.max(0, asNumber(item.stock)) + Math.max(0, asNumber(movement.qty));
+    await syncNormalizedRecord("inventory", {
+      ...(item.raw_data || {}),
+      id: item.id,
+      brand: item.brand || item.raw_data?.brand || "",
+      model: item.model || item.raw_data?.model || "",
+      name: item.name || item.raw_data?.name || "Articulo",
+      category: item.category || item.raw_data?.category || "",
+      stock: restoredStock,
+      min: Math.max(1, asNumber(item.min_stock || item.raw_data?.min || 1)),
+      minStock: Math.max(1, asNumber(item.min_stock || item.raw_data?.minStock || 1)),
+      cost: Math.max(0, asNumber(item.cost || item.raw_data?.cost)),
+      subdealerPrice: Math.max(0, asNumber(item.subdealer_price || item.raw_data?.subdealerPrice)),
+      price: Math.max(0, asNumber(item.price || item.raw_data?.price)),
+      updatedAt: timestamp
+    }, false, item.created_at || timestamp, timestamp);
+  }
+  await query("DELETE FROM inventory_movements WHERE ref_id = $1 AND type = 'salida_orden'", [order.id]);
+  if (archived) return;
+
+  const suppliedParts = Array.isArray(order.suppliedParts) ? order.suppliedParts : [];
+  let index = 0;
+  for (const part of suppliedParts.filter((entry) => entry?.inventoryId)) {
+    index += 1;
+    const qty = Math.max(1, asNumber(part.qty || 1));
+    const itemResult = await query("SELECT * FROM inventory_items WHERE id = $1 AND archived = FALSE LIMIT 1", [part.inventoryId]);
+    const item = itemResult.rows[0];
+    if (!item) continue;
+    const nextStock = Math.max(0, asNumber(item.stock) - qty);
+    const cost = Math.max(0, asNumber(part.cost || item.cost || item.raw_data?.cost));
+    await syncNormalizedRecord("inventory", {
+      ...(item.raw_data || {}),
+      id: item.id,
+      brand: item.brand || item.raw_data?.brand || "",
+      model: item.model || item.raw_data?.model || "",
+      name: item.name || item.raw_data?.name || part.part || "Articulo",
+      category: item.category || item.raw_data?.category || "",
+      stock: nextStock,
+      min: Math.max(1, asNumber(item.min_stock || item.raw_data?.min || 1)),
+      minStock: Math.max(1, asNumber(item.min_stock || item.raw_data?.minStock || 1)),
+      cost,
+      subdealerPrice: Math.round(cost * 1.3 * 100) / 100,
+      price: Math.max(0, asNumber(item.price || item.raw_data?.price)),
+      updatedAt: timestamp
+    }, false, item.created_at || timestamp, timestamp);
+    await syncNormalizedRecord("inventoryMovement", {
+      id: `mov_order_${order.id}_${part.id || index}`,
+      itemId: item.id,
+      itemName: part.part || item.name || "Refaccion",
+      qty,
+      type: "salida_orden",
+      detail: `Refaccion usada en orden ${order.folio || order.id}: ${part.part || item.name || "Refaccion"}`,
+      refId: order.id,
+      createdAt: timestamp
+    }, false, timestamp, timestamp);
   }
 }
 
@@ -1375,7 +1445,15 @@ async function archiveNormalizedRecord(type, recordId) {
   };
   const table = tableMap[type];
   if (!table) return;
+  let orderData = null;
+  if (type === "order") {
+    const current = await query("SELECT raw_data FROM service_orders WHERE id = $1 LIMIT 1", [recordId]);
+    orderData = current.rows[0]?.raw_data || null;
+  }
   await query(`UPDATE ${table} SET archived = TRUE, updated_at = $1 WHERE id = $2`, [now(), recordId]);
+  if (type === "order" && orderData) {
+    await applyOrderInventoryEffects(orderData, true, now());
+  }
 }
 
 async function findDuplicateProfessionalValues(table, column) {

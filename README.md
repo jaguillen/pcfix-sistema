@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-rebuild-bd-directa-manual-20260715-06`
+`pcfix-rebuild-bd-directa-manual-20260715-08`
 
 ## Que subir a GitHub
 
@@ -49,7 +49,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-rebuild-bd-directa-manual-20260715-06
+pcfix-rebuild-bd-directa-manual-20260715-08
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -59,7 +59,7 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-bd-directa-20260715-05
+pcfix-backend-bd-directa-20260715-06
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:

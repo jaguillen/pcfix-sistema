@@ -1,8 +1,9 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-06";
+const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-08";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
 const SESSION_KEY = "pcfix-online-session-v2";
+const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
 
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
@@ -30,6 +31,18 @@ const modelCatalog = [
   "OPPO A38", "OPPO A58", "OPPO Reno 11", "OPPO Reno 12",
   "Huawei Nova 11", "Huawei Nova 12", "Honor X8b", "Honor X9b",
   "HP Pavilion", "HP Envy", "Dell Inspiron", "Dell Latitude", "Lenovo IdeaPad", "Lenovo ThinkPad", "ASUS VivoBook", "Acer Aspire"
+];
+const commonFailures = [
+  { label: "No carga", text: "Equipo no carga o requiere revisar centro de carga, cable flex, bateria y consumo." },
+  { label: "Pantalla rota", text: "Pantalla/display roto o sin imagen; validar touch, brillo, marco y sellado." },
+  { label: "Bateria", text: "Bateria se descarga rapido, esta inflada o no retiene carga." },
+  { label: "Humedad", text: "Posible dano por humedad; requiere limpieza, diagnostico de placa y prueba de componentes." },
+  { label: "Audio", text: "Falla de bocina, auricular o microfono; validar modulo de audio y flex." },
+  { label: "Camara", text: "Camara no enfoca, no abre o presenta manchas; revisar modulo y flex." },
+  { label: "Software", text: "Sistema lento, bloqueado o con errores; requiere respaldo, reinstalacion o actualizacion." },
+  { label: "Laptop lenta", text: "Equipo lento; revisar disco, RAM, temperatura, sistema y estado fisico." },
+  { label: "Teclado", text: "Teclas no responden o touchpad falla; revisar flex, teclado y humedad." },
+  { label: "No enciende", text: "Equipo no enciende; revisar bateria, fuente, placa, boton de encendido y consumo." }
 ];
 
 const defaultState = {
@@ -184,6 +197,7 @@ function wireEvents() {
   $("themeBlue").addEventListener("input", applyThemeFromInputs);
   $("themeCyan").addEventListener("input", applyThemeFromInputs);
   document.querySelectorAll("[data-reset]").forEach((button) => button.addEventListener("click", () => resetForm(button.dataset.reset)));
+  renderCommonFailures();
   renderPatternGrid();
   renderPurchaseItems([]);
   renderSelectedParts();
@@ -332,7 +346,7 @@ function renderDashboard() {
   const activeOrders = orders.filter((o) => !["Entregado", "Cancelado"].includes(o.status));
   const lowStock = inventory.filter((i) => Number(i.stock || 0) <= Number(i.min || i.minStock || 1));
   const revenue = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
-  const cost = orders.flatMap((o) => o.suppliedParts || []).reduce((sum, p) => sum + Number(p.totalCost || p.cost || 0), 0);
+  const cost = orders.reduce((sum, order) => sum + getOrderPartsCost(order), 0);
   const receivables = orders.reduce((sum, o) => sum + getBalance(o), 0);
   const margin = revenue ? Math.max(0, Math.round(((revenue - cost) / revenue) * 100)) : 0;
   $("metricClients").textContent = active(state.clients).length;
@@ -513,9 +527,15 @@ function orderCard(o) {
   const client = getClient(o.clientId);
   const evidenceCount = (o.statusEvidencePhotos || []).length;
   const parts = o.suppliedParts || [];
+  const delivered = o.status === "Entregado";
   return card(`
-    <strong>${escapeHtml(o.folio || o.id)} | ${escapeHtml(o.device || "")}</strong>
-    <span>${escapeHtml(client?.name || "Sin cliente")} | ${escapeHtml(o.status || "")}</span>
+    <div class="order-card-head">
+      <div>
+        <strong>${escapeHtml(o.folio || o.id)} | ${escapeHtml(o.device || "")}</strong>
+        <span>${escapeHtml(client?.name || "Sin cliente")} | ${escapeHtml(o.status || "")}</span>
+      </div>
+      <b class="status-badge ${statusClass(o.status)}">${escapeHtml(o.status || "Sin estatus")}</b>
+    </div>
     <small>Total ${money.format(Number(o.total || 0))} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount} | Refacciones ${parts.length}</small>
     ${parts.length ? `<div class="mini-chip-row">${parts.slice(0, 4).map((part) => `<span>${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}</span>`).join("")}</div>` : ""}
     <div class="status-inline">
@@ -524,11 +544,12 @@ function orderCard(o) {
         ${orderStatuses.map((status) => `<option ${status === o.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
       </select>
     </div>
-    <div class="record-actions">
+    <div class="order-action-grid">
       <button onclick="editOrder('${o.id}')" class="btn ghost">Modificar</button>
-      <a class="btn ghost" target="_blank" rel="noreferrer" href="${client ? waUrl(client.phone, orderMessage(o)) : "#"}">WhatsApp</a>
-      <a class="btn ghost" target="_blank" rel="noreferrer" href="${client ? waUrl(client.phone, trackingMessage(o)) : "#"}">Seguimiento</a>
-      <button onclick="printOrderById('${o.id}')" class="btn ghost">PDF</button>
+      <button onclick="sendStatusWhatsApp('${o.id}')" class="btn ghost">Avisar estatus</button>
+      <button onclick="sendTrackingWhatsApp('${o.id}')" class="btn ghost">Enviar seguimiento</button>
+      <button onclick="printOrderById('${o.id}')" class="btn ghost">Comprobante PDF</button>
+      ${delivered ? `<button onclick="sendDeliveryWhatsApp('${o.id}')" class="btn ghost">Recomendacion</button>` : `<button onclick="changeOrderStatus('${o.id}', 'Entregado')" class="btn primary">Entregar</button>`}
       <button onclick="removeRecord('order','${o.id}')" class="btn danger">Eliminar</button>
     </div>`);
 }
@@ -693,7 +714,9 @@ async function saveOrder(event) {
     deposit,
     paid: deposit >= total,
     issue: $("orderIssue").value.trim(),
-    notes: $("orderNotes").value.trim(),
+    notes: $("orderConditions").value.trim(),
+    physicalState: $("orderConditions").value.trim(),
+    accessories: $("orderAccessories").value.trim(),
     unlockPattern: $("orderPattern").value.trim(),
     patternSize: Number($("patternSize").value || 3),
     quotePartName: $("orderQuotePart").value.trim(),
@@ -838,11 +861,47 @@ async function changeOrderStatus(orderId, next) {
     updatedAt: now()
   };
   await saveRecord("order", updated);
-  const client = getClient(order.clientId);
-  if (client?.phone) window.open(waUrl(client.phone, orderMessage(updated)), "_blank", "noreferrer");
-  if (next === "Entregado" && client?.phone) {
-    window.open(waUrl(client.phone, `${orderMessage(updated)} Gracias por confiar en PCFix Comitan. Nos ayudas recomendandonos en Facebook: https://www.facebook.com/pcfixcomitan`), "_blank", "noreferrer");
+  if (next === "Entregado") {
+    handleDeliveredOrder(updated);
+    return;
   }
+  sendStatusWhatsApp(updated.id);
+}
+
+function handleDeliveredOrder(order) {
+  showAlert("Orden entregada, saldo marcado como pagado. Se abrira el comprobante y WhatsApp.", "ok");
+  printOrderDocument(order, { context: "delivery" });
+  sendDeliveryWhatsApp(order.id);
+}
+
+function sendStatusWhatsApp(orderId) {
+  const order = state.orders.find((o) => o.id === orderId);
+  const client = getClient(order?.clientId);
+  if (!order || !client?.phone) {
+    showAlert("Esta orden no tiene cliente con telefono WhatsApp.", "error");
+    return;
+  }
+  window.open(waUrl(client.phone, orderMessage(order)), "_blank", "noreferrer");
+}
+
+function sendTrackingWhatsApp(orderId) {
+  const order = state.orders.find((o) => o.id === orderId);
+  const client = getClient(order?.clientId);
+  if (!order || !client?.phone) {
+    showAlert("Esta orden no tiene cliente con telefono WhatsApp.", "error");
+    return;
+  }
+  window.open(waUrl(client.phone, trackingMessage(order)), "_blank", "noreferrer");
+}
+
+function sendDeliveryWhatsApp(orderId) {
+  const order = state.orders.find((o) => o.id === orderId);
+  const client = getClient(order?.clientId);
+  if (!order || !client?.phone) {
+    showAlert("Esta orden no tiene cliente con telefono WhatsApp.", "error");
+    return;
+  }
+  window.open(waUrl(client.phone, deliveryMessage(order)), "_blank", "noreferrer");
 }
 
 async function removeRecord(type, idValue) {
@@ -960,7 +1019,8 @@ function showOrderForm(order = null) {
   $("orderDeposit").value = Number(order?.deposit || 0);
   $("orderWarrantyDays").value = Math.max(90, Number(order?.warrantyDays || 90));
   $("orderIssue").value = order?.issue || "";
-  $("orderNotes").value = order?.notes || "";
+  $("orderConditions").value = order?.physicalState || order?.notes || "";
+  $("orderAccessories").value = order?.accessories || "";
   $("orderPattern").value = order?.unlockPattern || "";
   $("patternSize").value = String(order?.patternSize || 3);
   $("orderQuotePart").value = order?.quotePartName || suggestPartFromDiagnosis(order?.issue || "", order?.device || "");
@@ -1003,6 +1063,23 @@ function resetForm(kind) {
     renderPatternGrid();
   }
   if (kind === "purchase") renderPurchaseItems([]);
+}
+
+function renderCommonFailures() {
+  const box = $("commonFailureChips");
+  if (!box) return;
+  box.innerHTML = commonFailures.map((failure) => `
+    <button class="failure-chip" type="button" onclick="addCommonFailure('${escapeAttr(failure.label)}')">${escapeHtml(failure.label)}</button>
+  `).join("");
+}
+
+function addCommonFailure(label) {
+  const failure = commonFailures.find((item) => item.label === label);
+  if (!failure) return;
+  const input = $("orderIssue");
+  const current = input.value.trim();
+  input.value = current ? `${current}\n${failure.text}` : failure.text;
+  updateOrderSuggestions();
 }
 
 function updateOrderSuggestions() {
@@ -1317,7 +1394,9 @@ function draftOrderFromForm() {
     total,
     deposit: $("orderStatus").value === "Entregado" ? total : Number($("orderDeposit").value || 0),
     issue: $("orderIssue").value.trim(),
-    notes: $("orderNotes").value.trim(),
+    notes: $("orderConditions").value.trim(),
+    physicalState: $("orderConditions").value.trim(),
+    accessories: $("orderAccessories").value.trim(),
     warrantyDays: Math.max(90, Number($("orderWarrantyDays").value || 90)),
     warrantyTerms: defaultWarrantyTerms(),
     suppliedParts: currentSelectedParts,
@@ -1331,9 +1410,13 @@ function printOrderById(orderId) {
   if (order) printOrderDocument(order);
 }
 
-function printOrderDocument(order) {
+function printOrderDocument(order, options = {}) {
   const client = getClient(order.clientId) || {};
   const parts = order.suppliedParts || [];
+  const isDelivery = options.context === "delivery" || order.status === "Entregado";
+  const documentTitle = "Orden de servicio";
+  const conditions = order.physicalState || order.notes || "";
+  const accessories = order.accessories || "Sin accesorios registrados";
   const partsRows = parts.length
     ? parts.map((part) => `<tr><td>${escapeHtml(part.part || "")}</td><td>${escapeHtml(part.qty || 1)}</td><td>${money.format(Number(part.totalCost ?? part.cost ?? 0))}</td></tr>`).join("")
     : `<tr><td colspan="3">Sin refacciones registradas</td></tr>`;
@@ -1343,29 +1426,45 @@ function printOrderDocument(order) {
     return;
   }
   popup.document.write(`
-    <!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(order.folio || "Orden PCFix")}</title>
+    <!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(documentTitle)} ${escapeHtml(order.folio || "PCFix")}</title>
     <style>
-      body{font-family:Poppins,Arial,sans-serif;margin:0;color:#1F2937;background:#fff}
-      main{max-width:860px;margin:0 auto;padding:34px}
-      header{display:flex;justify-content:space-between;gap:22px;align-items:center;border-bottom:3px solid #0B3B63;padding-bottom:18px}
-      img{width:96px;height:96px;object-fit:contain}
-      h1{margin:0;color:#0B3B63;font-size:30px} h2{margin:24px 0 10px;color:#0B3B63;font-size:17px}
-      p{margin:4px 0}.muted{color:#667085}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}
-      .box{border:1px solid #DDE6EF;border-radius:8px;padding:14px;background:#fff}.total{font-size:24px;font-weight:900;color:#0B3B63}
-      table{width:100%;border-collapse:collapse;margin-top:8px}td,th{border-bottom:1px solid #DDE6EF;padding:10px;text-align:left}th{color:#667085}
-      footer{margin-top:28px;border-top:1px solid #DDE6EF;padding-top:14px;color:#667085;font-size:12px}
-      @media print{button{display:none}main{padding:18px}}
+      body{font-family:Poppins,Arial,sans-serif;margin:0;color:#1F2937;background:#F5F7FA}
+      main{max-width:900px;margin:0 auto;padding:30px}
+      .sheet{overflow:hidden;border:1px solid #DDE6EF;border-radius:14px;background:#fff;box-shadow:0 24px 70px rgba(11,59,99,.10)}
+      .top{display:grid;grid-template-columns:112px 1fr auto;gap:18px;align-items:center;padding:26px 30px;background:#0B3B63;color:#fff}
+      .top img{width:96px;height:96px;object-fit:contain;border-radius:10px;background:#fff;padding:6px}
+      h1{margin:0;font-size:32px;letter-spacing:0}.top p{margin:6px 0 0;color:#D8F8FC;font-weight:700}
+      .folio{text-align:right}.folio strong{display:block;font-size:20px}.folio span{display:inline-block;margin-top:8px;border-radius:999px;padding:7px 11px;background:#20C7D8;color:#0B3B63;font-weight:900;font-size:12px}
+      .content{padding:28px 30px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.grid.three{grid-template-columns:1fr 1fr 1fr}
+      .box{border:1px solid #DDE6EF;border-radius:10px;padding:15px;background:#fff}.box.soft{background:#F8FAFC}
+      h2{margin:0 0 10px;color:#0B3B63;font-size:15px;text-transform:uppercase;letter-spacing:.04em}
+      p{margin:5px 0;line-height:1.45}.muted{color:#667085}.total{font-size:26px;font-weight:900;color:#0B3B63}
+      table{width:100%;border-collapse:collapse;margin-top:8px}td,th{border-bottom:1px solid #DDE6EF;padding:10px;text-align:left}th{color:#667085;font-size:12px;text-transform:uppercase}
+      .brand-line{height:5px;background:linear-gradient(90deg,#0B3B63 0 82%,#20C7D8 82% 100%)}
+      .signature{height:80px;border-bottom:1px solid #9AA8B8;margin-top:40px}.signature-label{text-align:center;color:#667085;font-size:12px}
+      footer{margin-top:20px;border-top:1px solid #DDE6EF;padding-top:14px;color:#667085;font-size:12px}
+      button{margin:0 0 16px;border:1px solid #0B3B63;border-radius:8px;background:#0B3B63;color:#fff;padding:11px 15px;font-weight:900}
+      @media print{body{background:#fff}button{display:none}main{padding:0}.sheet{box-shadow:none;border-radius:0}}
     </style></head><body><main>
       <button onclick="window.print()">Imprimir / Guardar PDF</button>
-      <header><div><h1>PCFix Comitan</h1><p class="muted">Orden de servicio premium</p></div><img src="assets/logo-pcfix.png"></header>
+      <section class="sheet">
+      <div class="top"><img src="assets/logo-pcfix.png"><div><h1>PCFix Comitan</h1><p>${escapeHtml(documentTitle)}</p></div><div class="folio"><strong>${escapeHtml(order.folio || "")}</strong><span>${escapeHtml(order.status || "")}</span></div></div>
+      <div class="brand-line"></div>
+      <div class="content">
       <section class="grid">
-        <div class="box"><h2>Orden</h2><p><b>Folio:</b> ${escapeHtml(order.folio || "")}</p><p><b>Estatus:</b> ${escapeHtml(order.status || "")}</p><p><b>Equipo:</b> ${escapeHtml(order.device || "")}</p><p><b>Serie/IMEI:</b> ${escapeHtml(order.serial || "")}</p></div>
+        <div class="box"><h2>Orden</h2><p><b>Equipo:</b> ${escapeHtml(order.device || "")}</p><p><b>Serie/IMEI:</b> ${escapeHtml(order.serial || "")}</p><p><b>Tecnico:</b> ${escapeHtml(order.technician || "")}</p></div>
         <div class="box"><h2>Cliente</h2><p><b>Nombre:</b> ${escapeHtml(client.name || "")}</p><p><b>Telefono:</b> ${escapeHtml(client.phone || "")}</p><p><b>Correo:</b> ${escapeHtml(client.email || "")}</p></div>
       </section>
-      <section class="box"><h2>Diagnostico</h2><p>${escapeHtml(order.issue || "")}</p><p class="muted">${escapeHtml(order.notes || "")}</p></section>
-      <section class="box"><h2>Refacciones</h2><table><thead><tr><th>Pieza</th><th>Cant.</th><th>Costo</th></tr></thead><tbody>${partsRows}</tbody></table></section>
+      <section class="box soft"><h2>Falla / diagnostico</h2><p>${escapeHtml(order.issue || "")}</p></section>
+      <section class="grid">
+        <div class="box"><h2>Condiciones del equipo</h2><p>${escapeHtml(conditions || "Sin condiciones registradas")}</p></div>
+        <div class="box"><h2>Accesorios recibidos</h2><p>${escapeHtml(accessories)}</p></div>
+      </section>
+      <section class="box"><h2>Refacciones utilizadas</h2><table><thead><tr><th>Pieza</th><th>Cant.</th><th>Costo</th></tr></thead><tbody>${partsRows}</tbody></table></section>
       <section class="grid"><div class="box"><h2>Garantia</h2><p>${Number(order.warrantyDays || 90)} dias</p><p class="muted">${escapeHtml(order.warrantyTerms || defaultWarrantyTerms())}</p></div><div class="box"><h2>Importe</h2><p class="total">${money.format(Number(order.total || 0))}</p><p>Anticipo/pagado: ${money.format(getPaid(order))}</p><p>Saldo: ${money.format(getBalance(order))}</p></div></section>
-      <footer>Documento generado desde PCFix Sistema. La informacion proviene de la base de datos en linea.</footer>
+      ${isDelivery ? `<section class="grid"><div><div class="signature"></div><p class="signature-label">Firma de entrega PCFix</p></div><div><div class="signature"></div><p class="signature-label">Firma de conformidad del cliente</p></div></section>` : ""}
+      <footer>PCFix Comitan | La solucion a tus problemas | Documento generado desde informacion registrada en la base de datos.</footer>
+      </div></section>
     </main></body></html>
   `);
   popup.document.close();
@@ -1405,6 +1504,14 @@ function getPaid(order) {
 
 function getBalance(order) {
   return Math.max(0, Number(order.total || 0) - getPaid(order));
+}
+
+function getOrderPartsCost(order) {
+  return (order.suppliedParts || []).reduce((sum, part) => {
+    const qty = Math.max(1, Number(part.qty || 1));
+    const cost = Number(part.totalCost ?? part.total_cost ?? qty * Number(part.cost || 0));
+    return sum + cost;
+  }, 0);
 }
 
 function nextOrderFolio() {
@@ -1501,11 +1608,16 @@ function waUrl(phone, text) {
 
 function orderMessage(order) {
   const client = getClient(order.clientId);
-  return `Hola ${client?.name || ""}, tu equipo ${order.device || ""} con folio ${order.folio || ""} esta en estado: ${order.status || ""}.`;
+  return `Hola ${client?.name || ""}, te saluda PCFix Comitan. Tu equipo ${order.device || ""} con folio ${order.folio || ""} esta en estado: ${order.status || ""}.`;
 }
 
 function trackingMessage(order) {
-  return `Hola, puedes consultar el seguimiento de tu reparacion con el folio ${order.folio || ""} en el portal de PCFix. Estado actual: ${order.status || ""}.`;
+  return `Hola, puedes consultar el seguimiento visual de tu reparacion con el folio ${order.folio || ""} en el portal de PCFix. Estado actual: ${order.status || ""}.`;
+}
+
+function deliveryMessage(order) {
+  const client = getClient(order.clientId);
+  return `Hola ${client?.name || ""}, tu equipo ${order.device || ""} con folio ${order.folio || ""} fue entregado. El comprobante de servicio esta listo para compartirse contigo. Gracias por confiar en PCFix Comitan; nos ayudas mucho dejandonos una recomendacion en Facebook: ${facebookReviewUrl}`;
 }
 
 function purchaseMessage(purchase) {
@@ -1533,6 +1645,10 @@ function escapeHtml(value) {
   }[char]));
 }
 
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, "&#096;");
+}
+
 Object.assign(window, {
   PCFIX_FRONTEND_VERSION,
   editClient,
@@ -1545,9 +1661,13 @@ Object.assign(window, {
   removeRecord,
   quickStatus,
   changeOrderStatus,
+  sendStatusWhatsApp,
+  sendTrackingWhatsApp,
+  sendDeliveryWhatsApp,
   receivePurchase,
   removeEvidencePhoto,
   removeSelectedOrderPart,
+  addCommonFailure,
   togglePatternPoint,
   removePurchaseItemRow,
   printOrderById

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-06">
+    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-08">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -136,7 +136,14 @@
               <label>Garantia dias<input id="orderWarrantyDays" type="number" min="90" value="90"></label>
             </div>
             <label>Falla / diagnostico<textarea id="orderIssue" rows="3" required></textarea></label>
-            <label>Condiciones / accesorios<textarea id="orderNotes" rows="3"></textarea></label>
+            <div class="common-failures">
+              <span>Fallas comunes</span>
+              <div id="commonFailureChips" class="failure-chip-row"></div>
+            </div>
+            <div class="form-grid">
+              <label>Condiciones del equipo<textarea id="orderConditions" rows="3" placeholder="Golpes, humedad, pantalla rota, rayones..."></textarea></label>
+              <label>Accesorios recibidos<textarea id="orderAccessories" rows="3" placeholder="Cargador, funda, SIM, memoria, caja..."></textarea></label>
+            </div>
             <label>Clave / patron
               <div class="pattern-widget">
                 <select id="patternSize"><option value="3">3x3</option><option value="4">4x4</option></select>
