@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-05";
+const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-06";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -59,6 +59,8 @@ let session = loadSession();
 let activeView = "dashboard";
 let busy = false;
 let currentEvidencePhotos = [];
+let currentSelectedParts = [];
+let currentAdminReport = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -165,11 +167,26 @@ function wireEvents() {
   $("orderEvidence").addEventListener("change", handleEvidenceFiles);
   $("patternSize").addEventListener("change", renderPatternGrid);
   $("addPurchaseItemBtn").addEventListener("click", () => addPurchaseItemRow());
+  $("addOrderPartBtn").addEventListener("click", addSelectedOrderPart);
+  $("orderPartQty").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addSelectedOrderPart();
+    }
+  });
+  $("printOrderBtn").addEventListener("click", () => {
+    const order = $("orderId").value ? state.orders.find((item) => item.id === $("orderId").value) : null;
+    printOrderDocument(order || draftOrderFromForm());
+  });
+  $("appointmentForm").addEventListener("submit", saveAppointment);
+  $("warrantyForm").addEventListener("submit", saveWarranty);
+  $("loadAdminReportBtn").addEventListener("click", loadAdminReports);
   $("themeBlue").addEventListener("input", applyThemeFromInputs);
   $("themeCyan").addEventListener("input", applyThemeFromInputs);
   document.querySelectorAll("[data-reset]").forEach((button) => button.addEventListener("click", () => resetForm(button.dataset.reset)));
   renderPatternGrid();
   renderPurchaseItems([]);
+  renderSelectedParts();
 }
 
 async function login(event) {
@@ -282,8 +299,10 @@ function showView(view) {
     suppliers: ["Proveedores", "Directorio de compras."],
     purchases: ["Compras", "Cotizaciones, pedidos y recepcion."],
     payments: ["Caja", "Pagos y saldos."],
+    appointments: ["Agenda", "Citas, entregas y seguimiento."],
+    warranties: ["Garantias", "Reclamos, resolucion y costo."],
     portal: ["Portal cliente", "Consulta por folio."],
-    settings: ["Configuracion", "Datos de empresa."]
+    settings: ["Configuracion", "Empresa, identidad y salud BD."]
   };
   $("viewTitle").textContent = names[view][0];
   $("viewSubtitle").textContent = names[view][1];
@@ -300,6 +319,9 @@ function render() {
   renderOrders();
   renderPurchases();
   renderPayments();
+  renderAppointments();
+  renderWarranties();
+  renderAdminHealth();
   hydrateSettings();
 }
 
@@ -311,15 +333,19 @@ function renderDashboard() {
   const lowStock = inventory.filter((i) => Number(i.stock || 0) <= Number(i.min || i.minStock || 1));
   const revenue = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
   const cost = orders.flatMap((o) => o.suppliedParts || []).reduce((sum, p) => sum + Number(p.totalCost || p.cost || 0), 0);
+  const receivables = orders.reduce((sum, o) => sum + getBalance(o), 0);
+  const margin = revenue ? Math.max(0, Math.round(((revenue - cost) / revenue) * 100)) : 0;
   $("metricClients").textContent = active(state.clients).length;
   $("metricOrders").textContent = activeOrders.length;
   $("metricPurchases").textContent = purchases.length;
   $("metricLowStock").textContent = lowStock.length;
   $("metricRevenue").textContent = money.format(revenue);
+  $("metricMargin").textContent = `${margin}%`;
   $("recentOrders").innerHTML = orders.slice(0, 8).map(orderCard).join("") || empty("Sin ordenes en BD");
   renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost });
   renderStatusChart(orders);
   renderStockRisk(lowStock);
+  renderExecutiveCharts({ orders, purchases, revenue, cost, receivables });
 }
 
 function renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost }) {
@@ -382,6 +408,60 @@ function renderStockRisk(items) {
   `).join("") || empty("Sin stock bajo");
 }
 
+function renderExecutiveCharts({ orders, purchases, revenue, cost, receivables }) {
+  const monthly = groupByMonth(orders);
+  const serviceMix = groupServices(orders);
+  const profit = Math.max(0, revenue - cost);
+  $("executiveSummary").textContent = `${orders.length} ordenes | ${purchases.length} compras`;
+  $("monthlyRevenueChart").innerHTML = miniBars(monthly, "amount", (item) => item.label, (item) => money.format(item.amount));
+  $("serviceMixChart").innerHTML = miniBars(serviceMix, "total", (item) => item.label, (item) => `${item.total}`);
+  $("profitChart").innerHTML = miniBars([
+    { label: "Ingreso", amount: revenue },
+    { label: "Costo", amount: cost },
+    { label: "Margen", amount: profit }
+  ], "amount", (item) => item.label, (item) => money.format(item.amount));
+  $("receivableChart").innerHTML = miniBars([
+    { label: "Cobrado", amount: Math.max(0, revenue - receivables) },
+    { label: "Pendiente", amount: receivables }
+  ], "amount", (item) => item.label, (item) => money.format(item.amount));
+}
+
+function miniBars(rows, field, labelFn, valueFn) {
+  const cleanRows = rows.filter((row) => Number(row[field] || 0) > 0).slice(-6);
+  const max = Math.max(1, ...cleanRows.map((row) => Number(row[field] || 0)));
+  return cleanRows.map((row) => `
+    <div class="mini-bar-row">
+      <span>${escapeHtml(labelFn(row))}</span>
+      <i><b style="width:${Math.max(6, Number(row[field] || 0) / max * 100)}%"></b></i>
+      <strong>${escapeHtml(valueFn(row))}</strong>
+    </div>
+  `).join("") || empty("Sin datos suficientes");
+}
+
+function groupByMonth(orders) {
+  const map = new Map();
+  orders.filter((o) => o.status !== "Cancelado").forEach((order) => {
+    const key = String(order.createdAt || order.created_at || now()).slice(0, 7);
+    const row = map.get(key) || { label: key, amount: 0, total: 0 };
+    row.amount += Number(order.total || 0);
+    row.total += 1;
+    map.set(key, row);
+  });
+  return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function groupServices(orders) {
+  const buckets = { Celular: 0, Laptop: 0, Tablet: 0, Otros: 0 };
+  orders.forEach((order) => {
+    const text = normalize(order.device);
+    if (["iphone", "samsung", "xiaomi", "motorola", "oppo", "honor", "huawei", "redmi", "poco"].some((key) => text.includes(key))) buckets.Celular += 1;
+    else if (["hp", "dell", "lenovo", "asus", "acer", "laptop", "thinkpad", "pavilion"].some((key) => text.includes(key))) buckets.Laptop += 1;
+    else if (["tablet", "ipad"].some((key) => text.includes(key))) buckets.Tablet += 1;
+    else buckets.Otros += 1;
+  });
+  return Object.entries(buckets).map(([label, total]) => ({ label, total })).filter((row) => row.total);
+}
+
 function renderClients() {
   const rows = active(state.clients).filter((c) => matches([c.name, c.phone, c.email, c.address]));
   $("clientCount").textContent = rows.length;
@@ -432,15 +512,23 @@ function renderOrders() {
 function orderCard(o) {
   const client = getClient(o.clientId);
   const evidenceCount = (o.statusEvidencePhotos || []).length;
+  const parts = o.suppliedParts || [];
   return card(`
     <strong>${escapeHtml(o.folio || o.id)} | ${escapeHtml(o.device || "")}</strong>
     <span>${escapeHtml(client?.name || "Sin cliente")} | ${escapeHtml(o.status || "")}</span>
-    <small>Total ${money.format(Number(o.total || 0))} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount}</small>
+    <small>Total ${money.format(Number(o.total || 0))} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount} | Refacciones ${parts.length}</small>
+    ${parts.length ? `<div class="mini-chip-row">${parts.slice(0, 4).map((part) => `<span>${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}</span>`).join("")}</div>` : ""}
+    <div class="status-inline">
+      <span>Cambiar estatus</span>
+      <select onchange="changeOrderStatus('${o.id}', this.value)">
+        ${orderStatuses.map((status) => `<option ${status === o.status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+      </select>
+    </div>
     <div class="record-actions">
       <button onclick="editOrder('${o.id}')" class="btn ghost">Modificar</button>
-      <button onclick="quickStatus('${o.id}')" class="btn ghost">Estatus</button>
       <a class="btn ghost" target="_blank" rel="noreferrer" href="${client ? waUrl(client.phone, orderMessage(o)) : "#"}">WhatsApp</a>
       <a class="btn ghost" target="_blank" rel="noreferrer" href="${client ? waUrl(client.phone, trackingMessage(o)) : "#"}">Seguimiento</a>
+      <button onclick="printOrderById('${o.id}')" class="btn ghost">PDF</button>
       <button onclick="removeRecord('order','${o.id}')" class="btn danger">Eliminar</button>
     </div>`);
 }
@@ -475,12 +563,51 @@ function renderPayments() {
   `)).join("") || empty("Sin pagos en BD");
 }
 
+function renderAppointments() {
+  const rows = active(state.appointments).filter((a) => matches([a.type, a.date, a.time, a.notes, getClient(a.clientId)?.name]));
+  $("appointmentCount").textContent = rows.length;
+  $("appointmentList").innerHTML = rows
+    .sort((a, b) => `${a.date || ""} ${a.time || ""}`.localeCompare(`${b.date || ""} ${b.time || ""}`))
+    .map((a) => {
+      const client = getClient(a.clientId);
+      const order = state.orders.find((o) => o.id === a.orderId);
+      return card(`
+        <strong>${escapeHtml(a.type || "Actividad")} | ${escapeHtml(a.date || "")} ${escapeHtml(a.time || "")}</strong>
+        <span>${escapeHtml(client?.name || "Sin cliente")} ${order ? "| " + escapeHtml(order.folio || "") : ""}</span>
+        <small>${escapeHtml(a.notes || "")}</small>
+        <div class="record-actions">
+          <button onclick="editAppointment('${a.id}')" class="btn ghost">Editar</button>
+          <button onclick="removeRecord('appointment','${a.id}')" class="btn danger">Archivar</button>
+        </div>`);
+    }).join("") || empty("Sin actividades en agenda");
+}
+
+function renderWarranties() {
+  const rows = active(state.warrantyClaims).filter((w) => matches([w.reason, w.resolution, w.status, state.orders.find((o) => o.id === w.orderId)?.folio]));
+  $("warrantyCount").textContent = rows.length;
+  $("warrantyList").innerHTML = rows.map((w) => {
+    const order = state.orders.find((o) => o.id === w.orderId);
+    return card(`
+      <strong>${escapeHtml(order?.folio || "Orden sin folio")} | ${escapeHtml(w.status || "")}</strong>
+      <span>${escapeHtml(order?.device || "")} | Costo ${money.format(Number(w.cost || 0))}</span>
+      <small>${escapeHtml(w.reason || "")}</small>
+      ${w.resolution ? `<small>Resolucion: ${escapeHtml(w.resolution)}</small>` : ""}
+      <div class="record-actions">
+        <button onclick="editWarranty('${w.id}')" class="btn ghost">Editar</button>
+        <button onclick="removeRecord('warrantyClaim','${w.id}')" class="btn danger">Archivar</button>
+      </div>`);
+  }).join("") || empty("Sin garantias abiertas");
+}
+
 function renderSelectors() {
   $("orderClient").innerHTML = active(state.clients).map((c) => `<option value="${c.id}">${escapeHtml(c.name)} - ${escapeHtml(c.phone || "")}</option>`).join("");
-  $("orderParts").innerHTML = active(state.inventory).map((i) => `<option value="${i.id}">${escapeHtml(displayItem(i))} (${Number(i.stock || 0)})</option>`).join("");
+  renderOrderPartOptions();
   $("purchaseSupplier").innerHTML = active(state.suppliers).map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
   $("purchaseOrder").innerHTML = `<option value="">Sin orden</option>${active(state.orders).map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join("")}`;
   $("paymentOrder").innerHTML = active(state.orders).map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join("");
+  $("appointmentClient").innerHTML = active(state.clients).map((c) => `<option value="${c.id}">${escapeHtml(c.name)} - ${escapeHtml(c.phone || "")}</option>`).join("");
+  $("appointmentOrder").innerHTML = `<option value="">Sin orden</option>${active(state.orders).map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join("")}`;
+  $("warrantyOrder").innerHTML = active(state.orders).map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join("");
 }
 
 async function saveClient(event) {
@@ -542,19 +669,15 @@ async function saveInventory(event) {
 async function saveOrder(event) {
   event.preventDefault();
   const existing = state.orders.find((o) => o.id === $("orderId").value);
-  const selectedParts = Array.from($("orderParts").selectedOptions).map((option) => option.value);
-  const suppliedParts = selectedParts.map((partId) => {
-    const item = state.inventory.find((i) => i.id === partId);
-    return {
-      id: id("sup"),
-      inventoryId: partId,
-      part: displayItem(item),
-      qty: 1,
-      cost: Number(item?.cost || 0),
-      totalCost: Number(item?.cost || 0),
-      createdAt: now()
-    };
-  });
+  const selectedParts = currentSelectedParts.map((part) => part.inventoryId);
+  const suppliedParts = currentSelectedParts.map((part) => ({
+    ...part,
+    id: part.id || id("sup"),
+    qty: Math.max(1, Number(part.qty || 1)),
+    cost: Number(part.cost || 0),
+    totalCost: Math.max(1, Number(part.qty || 1)) * Number(part.cost || 0),
+    createdAt: part.createdAt || now()
+  }));
   const status = $("orderStatus").value;
   const total = Number($("orderTotal").value || 0);
   const deposit = status === "Entregado" ? total : Number($("orderDeposit").value || 0);
@@ -580,7 +703,7 @@ async function saveOrder(event) {
     statusHistory: updateHistory(existing, status),
     statusEvidencePhotos: currentEvidencePhotos,
     parts: selectedParts,
-    suppliedParts: existing?.suppliedParts?.length ? existing.suppliedParts : suppliedParts,
+    suppliedParts,
     createdAt: existing?.createdAt || now(),
     updatedAt: now()
   });
@@ -620,6 +743,41 @@ async function receivePurchase(purchaseId) {
   const updated = { ...purchase, status: "Recibido", receivedAt: purchase.receivedAt || now(), updatedAt: now() };
   await saveRecord("purchase", updated);
   showAlert("Compra recibida; el backend actualizo inventario en BD.", "ok");
+}
+
+async function saveAppointment(event) {
+  event.preventDefault();
+  const existing = state.appointments.find((a) => a.id === $("appointmentId").value);
+  await saveRecord("appointment", {
+    id: $("appointmentId").value || id("app"),
+    clientId: $("appointmentClient").value,
+    orderId: $("appointmentOrder").value,
+    date: $("appointmentDate").value,
+    time: $("appointmentTime").value,
+    type: $("appointmentType").value,
+    notes: $("appointmentNotes").value.trim(),
+    createdAt: existing?.createdAt || now(),
+    updatedAt: now()
+  });
+  resetForm("appointment");
+  showAlert("Cita guardada en BD.", "ok");
+}
+
+async function saveWarranty(event) {
+  event.preventDefault();
+  const existing = state.warrantyClaims.find((w) => w.id === $("warrantyId").value);
+  await saveRecord("warrantyClaim", {
+    id: $("warrantyId").value || id("war"),
+    orderId: $("warrantyOrder").value,
+    reason: $("warrantyReason").value.trim(),
+    resolution: $("warrantyResolution").value.trim(),
+    status: $("warrantyStatus").value,
+    cost: Number($("warrantyCost").value || 0),
+    createdAt: existing?.createdAt || now(),
+    updatedAt: now()
+  });
+  resetForm("warranty");
+  showAlert("Garantia guardada en BD.", "ok");
 }
 
 async function savePayment(event) {
@@ -663,8 +821,14 @@ async function saveSettings(event) {
 async function quickStatus(orderId) {
   const order = state.orders.find((o) => o.id === orderId);
   if (!order) return;
-  const next = prompt("Nuevo estatus", order.status || "Recibido");
+  const next = prompt(`Nuevo estatus:\n${orderStatuses.join(" | ")}`, order.status || "Recibido");
   if (!next) return;
+  await changeOrderStatus(orderId, next);
+}
+
+async function changeOrderStatus(orderId, next) {
+  const order = state.orders.find((o) => o.id === orderId);
+  if (!order || !next || next === order.status) return;
   const updated = {
     ...order,
     status: next,
@@ -676,6 +840,9 @@ async function quickStatus(orderId) {
   await saveRecord("order", updated);
   const client = getClient(order.clientId);
   if (client?.phone) window.open(waUrl(client.phone, orderMessage(updated)), "_blank", "noreferrer");
+  if (next === "Entregado" && client?.phone) {
+    window.open(waUrl(client.phone, `${orderMessage(updated)} Gracias por confiar en PCFix Comitan. Nos ayudas recomendandonos en Facebook: https://www.facebook.com/pcfixcomitan`), "_blank", "noreferrer");
+  }
 }
 
 async function removeRecord(type, idValue) {
@@ -744,6 +911,31 @@ function editPurchase(idValue) {
   showView("purchases");
 }
 
+function editAppointment(idValue) {
+  const a = state.appointments.find((x) => x.id === idValue);
+  if (!a) return;
+  $("appointmentId").value = a.id;
+  $("appointmentClient").value = a.clientId || "";
+  $("appointmentOrder").value = a.orderId || "";
+  $("appointmentDate").value = a.date || "";
+  $("appointmentTime").value = a.time || "";
+  $("appointmentType").value = a.type || "Seguimiento";
+  $("appointmentNotes").value = a.notes || "";
+  showView("appointments");
+}
+
+function editWarranty(idValue) {
+  const w = state.warrantyClaims.find((x) => x.id === idValue);
+  if (!w) return;
+  $("warrantyId").value = w.id;
+  $("warrantyOrder").value = w.orderId || "";
+  $("warrantyReason").value = w.reason || "";
+  $("warrantyResolution").value = w.resolution || "";
+  $("warrantyStatus").value = w.status || "Abierta";
+  $("warrantyCost").value = Number(w.cost || 0);
+  showView("warranties");
+}
+
 function applyTheme(theme = {}) {
   if (theme.blue) document.documentElement.style.setProperty("--pcfix-blue", theme.blue);
   if (theme.cyan) document.documentElement.style.setProperty("--pcfix-cyan", theme.cyan);
@@ -755,6 +947,7 @@ function applyThemeFromInputs() {
 
 function showOrderForm(order = null) {
   currentEvidencePhotos = order?.statusEvidencePhotos || [];
+  currentSelectedParts = normalizeOrderParts(order);
   $("orderForm").classList.remove("hidden");
   $("orderFormTitle").textContent = order ? "Modificar orden" : "Nueva orden";
   $("orderId").value = order?.id || "";
@@ -773,7 +966,8 @@ function showOrderForm(order = null) {
   $("orderQuotePart").value = order?.quotePartName || suggestPartFromDiagnosis(order?.issue || "", order?.device || "");
   renderPatternGrid();
   renderEvidencePreview();
-  Array.from($("orderParts").options).forEach((option) => option.selected = (order?.parts || []).includes(option.value));
+  renderOrderPartOptions();
+  renderSelectedParts();
   showView("orders");
 }
 
@@ -789,17 +983,21 @@ function resetForm(kind) {
     inventory: "inventoryForm",
     order: "orderForm",
     purchase: "purchaseForm",
-    payment: "paymentForm"
+    payment: "paymentForm",
+    appointment: "appointmentForm",
+    warranty: "warrantyForm"
   };
   const form = $(map[kind]);
   if (form) form.reset();
-  ["clientId", "supplierId", "itemId", "orderId", "purchaseId"].forEach((idName) => { if ($(idName)) $(idName).value = ""; });
+  ["clientId", "supplierId", "itemId", "orderId", "purchaseId", "appointmentId", "warrantyId"].forEach((idName) => { if ($(idName)) $(idName).value = ""; });
   $("itemStock").value = 1;
   $("itemMin").value = 1;
   $("itemSubdealer").value = "0.00";
   if (kind === "order") {
     currentEvidencePhotos = [];
+    currentSelectedParts = [];
     renderEvidencePreview();
+    renderSelectedParts();
     $("orderQuotePart").value = "";
     $("orderPattern").value = "";
     renderPatternGrid();
@@ -810,6 +1008,102 @@ function resetForm(kind) {
 function updateOrderSuggestions() {
   const suggested = suggestPartFromDiagnosis($("orderIssue").value, $("orderDevice").value);
   if (!$("orderQuotePart").value.trim()) $("orderQuotePart").value = suggested;
+  renderOrderPartOptions();
+}
+
+function renderOrderPartOptions() {
+  const select = $("orderPartSelect");
+  if (!select) return;
+  const selectedIds = new Set(currentSelectedParts.map((part) => part.inventoryId));
+  const compatible = compatibleInventoryForDevice($("orderDevice")?.value || "");
+  const rows = compatible.filter((item) => !selectedIds.has(item.id));
+  select.innerHTML = rows.map((item) => `
+    <option value="${item.id}">
+      ${escapeHtml(displayItem(item))} | Stock ${Number(item.stock || 0)} | ${money.format(Number(item.cost || 0))}
+    </option>
+  `).join("");
+  if (!rows.length) {
+    select.innerHTML = `<option value="">Sin refacciones compatibles disponibles</option>`;
+  }
+}
+
+function compatibleInventoryForDevice(device = "") {
+  const inventory = active(state.inventory);
+  const deviceKey = normalize(device);
+  if (!deviceKey) return inventory;
+  const tokens = deviceKey.split(/\s+/).filter((token) => token.length >= 2);
+  const scored = inventory.map((item) => {
+    const itemKey = normalize(`${item.brand || ""} ${item.model || ""} ${item.name || ""} ${item.category || ""}`);
+    const score = tokens.reduce((sum, token) => sum + (itemKey.includes(token) ? 1 : 0), 0);
+    return { item, score };
+  });
+  const matches = scored.filter((row) => row.score > 0).sort((a, b) => b.score - a.score).map((row) => row.item);
+  return matches.length ? matches : inventory;
+}
+
+function addSelectedOrderPart() {
+  const partId = $("orderPartSelect").value;
+  if (!partId) return;
+  const item = state.inventory.find((entry) => entry.id === partId);
+  if (!item || currentSelectedParts.some((part) => part.inventoryId === partId)) return;
+  const qty = Math.max(1, Number($("orderPartQty").value || 1));
+  currentSelectedParts.push({
+    id: id("sup"),
+    inventoryId: partId,
+    part: displayItem(item),
+    qty,
+    cost: Number(item.cost || 0),
+    totalCost: qty * Number(item.cost || 0),
+    createdAt: now()
+  });
+  $("orderPartQty").value = 1;
+  renderOrderPartOptions();
+  renderSelectedParts();
+}
+
+function renderSelectedParts() {
+  const box = $("selectedPartsBox");
+  if (!box) return;
+  box.innerHTML = currentSelectedParts.length ? currentSelectedParts.map((part) => `
+    <span class="part-chip premium-chip">
+      <strong>${escapeHtml(part.qty || 1)}x</strong> ${escapeHtml(part.part || "")}
+      <small>${money.format(Number(part.totalCost ?? Number(part.qty || 1) * Number(part.cost || 0)))}</small>
+      <button type="button" onclick="removeSelectedOrderPart('${part.inventoryId}')" aria-label="Quitar refaccion">x</button>
+    </span>
+  `).join("") : `<span class="part-empty">Selecciona una o varias refacciones para esta reparacion.</span>`;
+}
+
+function removeSelectedOrderPart(inventoryId) {
+  currentSelectedParts = currentSelectedParts.filter((part) => part.inventoryId !== inventoryId);
+  renderOrderPartOptions();
+  renderSelectedParts();
+}
+
+function normalizeOrderParts(order) {
+  if (!order) return [];
+  if (Array.isArray(order.suppliedParts) && order.suppliedParts.length) {
+    return order.suppliedParts.map((part) => ({
+      id: part.id || id("sup"),
+      inventoryId: part.inventoryId || part.inventory_id || "",
+      part: part.part || part.partName || part.part_name || "",
+      qty: Math.max(1, Number(part.qty || 1)),
+      cost: Number(part.cost || 0),
+      totalCost: Number(part.totalCost ?? part.total_cost ?? Number(part.qty || 1) * Number(part.cost || 0)),
+      createdAt: part.createdAt || part.created_at || now()
+    }));
+  }
+  return (order.parts || []).map((partId) => {
+    const item = state.inventory.find((entry) => entry.id === partId);
+    return {
+      id: id("sup"),
+      inventoryId: partId,
+      part: displayItem(item),
+      qty: 1,
+      cost: Number(item?.cost || 0),
+      totalCost: Number(item?.cost || 0),
+      createdAt: now()
+    };
+  });
 }
 
 function suggestPartFromDiagnosis(issue = "", device = "") {
@@ -964,6 +1258,117 @@ async function searchPortal(event) {
   } catch (error) {
     $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
   }
+}
+
+async function loadAdminReports() {
+  try {
+    $("adminHealthPanel").innerHTML = empty("Consultando backend...");
+    const [stability, analytics, integrity] = await Promise.all([
+      api(`/api/admin/stability?t=${Date.now()}`),
+      api(`/api/admin/analytics?t=${Date.now()}`),
+      api(`/api/admin/integrity?t=${Date.now()}`)
+    ]);
+    currentAdminReport = { stability, analytics, integrity };
+    renderAdminHealth();
+    showAlert("Diagnostico de BD actualizado.", "ok");
+  } catch (error) {
+    $("adminHealthPanel").innerHTML = empty(`No se pudo consultar diagnostico: ${error.message}`);
+  }
+}
+
+function renderAdminHealth() {
+  const panel = $("adminHealthPanel");
+  if (!panel) return;
+  if (!currentAdminReport) {
+    panel.innerHTML = `
+      <article><strong>Frontend</strong><span>${escapeHtml(PCFIX_FRONTEND_VERSION)}</span></article>
+      <article><strong>Modo</strong><span>Online directo a BD, sin datos offline de negocio</span></article>
+      <article><strong>Sesion</strong><span>Se cierra al cerrar navegador por sessionStorage</span></article>
+    `;
+    return;
+  }
+  const { stability, analytics, integrity } = currentAdminReport;
+  const kpis = analytics.kpis || {};
+  panel.innerHTML = `
+    <article><strong>Integridad BD</strong><span>${integrity.ok ? "Sin alertas" : "Revisar incidencias"} | Duplicados: ${countDuplicateAlerts(stability.duplicates)}</span></article>
+    <article><strong>Compras / inventario</strong><span>${kpis.pendingPurchases || 0} pendientes | ${money.format(Number(kpis.pendingPurchaseValue || 0))}</span></article>
+    <article><strong>Cuentas por cobrar</strong><span>${money.format(Number(kpis.receivables || 0))}</span></article>
+    <article><strong>Garantias</strong><span>${kpis.warrantyClaims || 0} abiertas | costo ${money.format(Number(kpis.warrantyCost || 0))}</span></article>
+    ${(integrity.checks || []).map((check) => `<article><strong>${escapeHtml(check.label)}</strong><span>${Number(check.total || 0)} caso(s)</span></article>`).join("")}
+  `;
+}
+
+function countDuplicateAlerts(duplicates = {}) {
+  return Object.values(duplicates).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
+}
+
+function draftOrderFromForm() {
+  const existing = state.orders.find((o) => o.id === $("orderId").value);
+  const total = Number($("orderTotal").value || existing?.total || 0);
+  return {
+    ...(existing || {}),
+    id: $("orderId").value || "borrador",
+    folio: existing?.folio || "BORRADOR",
+    clientId: $("orderClient").value,
+    device: $("orderDevice").value.trim(),
+    technician: $("orderTechnician").value.trim(),
+    serial: $("orderSerial").value.trim(),
+    status: $("orderStatus").value,
+    total,
+    deposit: $("orderStatus").value === "Entregado" ? total : Number($("orderDeposit").value || 0),
+    issue: $("orderIssue").value.trim(),
+    notes: $("orderNotes").value.trim(),
+    warrantyDays: Math.max(90, Number($("orderWarrantyDays").value || 90)),
+    warrantyTerms: defaultWarrantyTerms(),
+    suppliedParts: currentSelectedParts,
+    statusEvidencePhotos: currentEvidencePhotos,
+    updatedAt: now()
+  };
+}
+
+function printOrderById(orderId) {
+  const order = state.orders.find((item) => item.id === orderId);
+  if (order) printOrderDocument(order);
+}
+
+function printOrderDocument(order) {
+  const client = getClient(order.clientId) || {};
+  const parts = order.suppliedParts || [];
+  const partsRows = parts.length
+    ? parts.map((part) => `<tr><td>${escapeHtml(part.part || "")}</td><td>${escapeHtml(part.qty || 1)}</td><td>${money.format(Number(part.totalCost ?? part.cost ?? 0))}</td></tr>`).join("")
+    : `<tr><td colspan="3">Sin refacciones registradas</td></tr>`;
+  const popup = window.open("", "_blank", "width=920,height=900");
+  if (!popup) {
+    showAlert("El navegador bloqueo la ventana de PDF. Permite ventanas emergentes para imprimir.", "error");
+    return;
+  }
+  popup.document.write(`
+    <!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(order.folio || "Orden PCFix")}</title>
+    <style>
+      body{font-family:Poppins,Arial,sans-serif;margin:0;color:#1F2937;background:#fff}
+      main{max-width:860px;margin:0 auto;padding:34px}
+      header{display:flex;justify-content:space-between;gap:22px;align-items:center;border-bottom:3px solid #0B3B63;padding-bottom:18px}
+      img{width:96px;height:96px;object-fit:contain}
+      h1{margin:0;color:#0B3B63;font-size:30px} h2{margin:24px 0 10px;color:#0B3B63;font-size:17px}
+      p{margin:4px 0}.muted{color:#667085}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}
+      .box{border:1px solid #DDE6EF;border-radius:8px;padding:14px;background:#fff}.total{font-size:24px;font-weight:900;color:#0B3B63}
+      table{width:100%;border-collapse:collapse;margin-top:8px}td,th{border-bottom:1px solid #DDE6EF;padding:10px;text-align:left}th{color:#667085}
+      footer{margin-top:28px;border-top:1px solid #DDE6EF;padding-top:14px;color:#667085;font-size:12px}
+      @media print{button{display:none}main{padding:18px}}
+    </style></head><body><main>
+      <button onclick="window.print()">Imprimir / Guardar PDF</button>
+      <header><div><h1>PCFix Comitan</h1><p class="muted">Orden de servicio premium</p></div><img src="assets/logo-pcfix.png"></header>
+      <section class="grid">
+        <div class="box"><h2>Orden</h2><p><b>Folio:</b> ${escapeHtml(order.folio || "")}</p><p><b>Estatus:</b> ${escapeHtml(order.status || "")}</p><p><b>Equipo:</b> ${escapeHtml(order.device || "")}</p><p><b>Serie/IMEI:</b> ${escapeHtml(order.serial || "")}</p></div>
+        <div class="box"><h2>Cliente</h2><p><b>Nombre:</b> ${escapeHtml(client.name || "")}</p><p><b>Telefono:</b> ${escapeHtml(client.phone || "")}</p><p><b>Correo:</b> ${escapeHtml(client.email || "")}</p></div>
+      </section>
+      <section class="box"><h2>Diagnostico</h2><p>${escapeHtml(order.issue || "")}</p><p class="muted">${escapeHtml(order.notes || "")}</p></section>
+      <section class="box"><h2>Refacciones</h2><table><thead><tr><th>Pieza</th><th>Cant.</th><th>Costo</th></tr></thead><tbody>${partsRows}</tbody></table></section>
+      <section class="grid"><div class="box"><h2>Garantia</h2><p>${Number(order.warrantyDays || 90)} dias</p><p class="muted">${escapeHtml(order.warrantyTerms || defaultWarrantyTerms())}</p></div><div class="box"><h2>Importe</h2><p class="total">${money.format(Number(order.total || 0))}</p><p>Anticipo/pagado: ${money.format(getPaid(order))}</p><p>Saldo: ${money.format(getBalance(order))}</p></div></section>
+      <footer>Documento generado desde PCFix Sistema. La informacion proviene de la base de datos en linea.</footer>
+    </main></body></html>
+  `);
+  popup.document.close();
 }
 
 function statusClass(status = "") {
@@ -1135,10 +1540,15 @@ Object.assign(window, {
   editInventory,
   editOrder,
   editPurchase,
+  editAppointment,
+  editWarranty,
   removeRecord,
   quickStatus,
+  changeOrderStatus,
   receivePurchase,
   removeEvidencePhoto,
+  removeSelectedOrderPart,
   togglePatternPoint,
-  removePurchaseItemRow
+  removePurchaseItemRow,
+  printOrderById
 });

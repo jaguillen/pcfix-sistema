@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-05">
+    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-06">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -40,6 +40,8 @@
           <button data-view="suppliers">Proveedores</button>
           <button data-view="purchases">Compras</button>
           <button data-view="payments">Caja</button>
+          <button data-view="appointments">Agenda</button>
+          <button data-view="warranties">Garantias</button>
           <button data-view="portal">Portal cliente</button>
           <button data-view="settings">Configuracion</button>
         </nav>
@@ -68,6 +70,7 @@
             <article class="metric"><span>Compras</span><strong id="metricPurchases">0</strong></article>
             <article class="metric"><span>Inventario bajo</span><strong id="metricLowStock">0</strong></article>
             <article class="metric"><span>Ingresos</span><strong id="metricRevenue">$0</strong></article>
+            <article class="metric"><span>Margen real</span><strong id="metricMargin">0%</strong></article>
           </div>
           <section class="premium-grid">
             <article class="panel">
@@ -82,6 +85,15 @@
               <div class="panel-header"><h2>Riesgo de inventario</h2></div>
               <div id="stockRiskList" class="compact-list"></div>
             </article>
+          </section>
+          <section class="panel">
+            <div class="panel-header"><h2>Graficos ejecutivos</h2><span id="executiveSummary" class="count-pill">BD directa</span></div>
+            <div class="charts-grid premium-charts">
+              <article><strong>Ingresos por mes</strong><div id="monthlyRevenueChart" class="mini-chart"></div></article>
+              <article><strong>Servicios frecuentes</strong><div id="serviceMixChart" class="mini-chart"></div></article>
+              <article><strong>Rentabilidad</strong><div id="profitChart" class="mini-chart"></div></article>
+              <article><strong>Cuentas por cobrar</strong><div id="receivableChart" class="mini-chart"></div></article>
+            </div>
           </section>
           <section class="panel">
             <div class="panel-header"><h2>Ordenes recientes</h2></div>
@@ -136,9 +148,21 @@
               <input id="orderEvidence" type="file" accept="image/*" multiple>
             </label>
             <div id="evidencePreview" class="photo-strip"></div>
-            <label>Refacciones usadas<select id="orderParts" multiple></select></label>
+            <label>Refacciones a usar
+              <div class="parts-picker premium-picker">
+                <div class="inline-field">
+                  <select id="orderPartSelect"></select>
+                  <input id="orderPartQty" type="number" min="1" value="1" aria-label="Cantidad">
+                  <button id="addOrderPartBtn" class="btn ghost" type="button">Agregar</button>
+                </div>
+                <div id="selectedPartsBox" class="selected-parts premium-selected"></div>
+              </div>
+            </label>
             <label>Pieza sugerida para compra<input id="orderQuotePart" placeholder="Se autocompleta segun diagnostico"></label>
-            <button class="btn primary" type="submit">Guardar orden en BD</button>
+            <div class="form-actions">
+              <button class="btn primary" type="submit">Guardar orden en BD</button>
+              <button id="printOrderBtn" class="btn ghost" type="button">PDF / imprimir</button>
+            </div>
           </form>
 
           <div class="two-panels">
@@ -243,6 +267,49 @@
           </div>
         </section>
 
+        <section id="appointmentsView" class="view">
+          <div class="split-layout">
+            <form id="appointmentForm" class="panel form-panel">
+              <div class="panel-header"><h2>Agenda</h2></div>
+              <input id="appointmentId" type="hidden">
+              <label>Cliente<select id="appointmentClient"></select></label>
+              <label>Orden relacionada<select id="appointmentOrder"></select></label>
+              <div class="form-grid">
+                <label>Fecha<input id="appointmentDate" type="date" required></label>
+                <label>Hora<input id="appointmentTime" type="time" required></label>
+              </div>
+              <label>Tipo<select id="appointmentType"><option>Recepcion</option><option>Diagnostico</option><option>Entrega</option><option>Seguimiento</option></select></label>
+              <label>Notas<textarea id="appointmentNotes" rows="3"></textarea></label>
+              <button class="btn primary" type="submit">Guardar cita</button>
+            </form>
+            <section class="panel">
+              <div class="panel-header"><h2>Proximas actividades</h2><span id="appointmentCount" class="count-pill">0</span></div>
+              <div id="appointmentList" class="records-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="warrantiesView" class="view">
+          <div class="split-layout">
+            <form id="warrantyForm" class="panel form-panel">
+              <div class="panel-header"><h2>Garantia</h2></div>
+              <input id="warrantyId" type="hidden">
+              <label>Orden<select id="warrantyOrder"></select></label>
+              <label>Motivo<textarea id="warrantyReason" rows="3" required></textarea></label>
+              <label>Resolucion<textarea id="warrantyResolution" rows="3"></textarea></label>
+              <div class="form-grid">
+                <label>Estatus<select id="warrantyStatus"><option>Abierta</option><option>En revision</option><option>Resuelta</option><option>Rechazada</option></select></label>
+                <label>Costo absorbido<input id="warrantyCost" type="number" min="0" step="0.01" value="0"></label>
+              </div>
+              <button class="btn primary" type="submit">Guardar garantia</button>
+            </form>
+            <section class="panel">
+              <div class="panel-header"><h2>Control de garantias</h2><span id="warrantyCount" class="count-pill">0</span></div>
+              <div id="warrantyList" class="records-list"></div>
+            </section>
+          </div>
+        </section>
+
         <section id="portalView" class="view">
           <div class="split-layout">
             <form id="portalForm" class="panel form-panel">
@@ -255,18 +322,24 @@
         </section>
 
         <section id="settingsView" class="view">
-          <form id="settingsForm" class="panel form-panel">
-            <div class="panel-header"><h2>Configuracion</h2></div>
-            <label>Nombre comercial<input id="businessName" required></label>
-            <label>Telefono<input id="businessPhone" required></label>
-            <label>Direccion<textarea id="businessAddress" rows="3"></textarea></label>
-            <label>Mensaje WhatsApp<textarea id="whatsappTemplate" rows="3"></textarea></label>
-            <div class="form-grid">
-              <label>Azul principal<input id="themeBlue" type="color" value="#0B3B63"></label>
-              <label>Turquesa<input id="themeCyan" type="color" value="#20C7D8"></label>
-            </div>
-            <button class="btn primary" type="submit">Guardar configuracion</button>
-          </form>
+          <div class="split-layout">
+            <form id="settingsForm" class="panel form-panel">
+              <div class="panel-header"><h2>Configuracion</h2></div>
+              <label>Nombre comercial<input id="businessName" required></label>
+              <label>Telefono<input id="businessPhone" required></label>
+              <label>Direccion<textarea id="businessAddress" rows="3"></textarea></label>
+              <label>Mensaje WhatsApp<textarea id="whatsappTemplate" rows="3"></textarea></label>
+              <div class="form-grid">
+                <label>Azul principal<input id="themeBlue" type="color" value="#0B3B63"></label>
+                <label>Turquesa<input id="themeCyan" type="color" value="#20C7D8"></label>
+              </div>
+              <button class="btn primary" type="submit">Guardar configuracion</button>
+            </form>
+            <section class="panel">
+              <div class="panel-header"><h2>Salud del sistema</h2><button id="loadAdminReportBtn" class="btn ghost" type="button">Revisar BD</button></div>
+              <div id="adminHealthPanel" class="compact-list"></div>
+            </section>
+          </div>
         </section>
       </main>
     </div>
