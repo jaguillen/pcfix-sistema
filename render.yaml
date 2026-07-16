@@ -3,7 +3,7 @@ services:
     name: pcfix-backend
     runtime: node
     plan: free
-    rootDir: backend
+    rootDir: outputs/production/backend
     buildCommand: npm install
     startCommand: node src/server-postgres.js
     envVars:
@@ -19,6 +19,6 @@ services:
   - type: web
     name: pcfix-sistema
     runtime: static
-    rootDir: .
+    rootDir: outputs
     buildCommand: ""
     staticPublishPath: .

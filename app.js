@@ -1,7 +1,7 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-02";
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
 const SESSION_KEY = "pcfix-online-session-v2";
+const CONFIG_KEY = "pcfix-online-config-v2";
 
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
@@ -71,14 +71,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 async function clearBrowserResidue() {
-  [
-    "pcfix-system-v1",
-    "pcfix-pending-sync-v1",
-    "pcfix-local-snapshots-v1",
-    "pcfix-api-config-v1",
-    "pcfix-api-session-v1",
-    "pcfix-online-config-v2"
-  ].forEach((key) => localStorage.removeItem(key));
+  ["pcfix-system-v1", "pcfix-pending-sync-v1", "pcfix-local-snapshots-v1"].forEach((key) => localStorage.removeItem(key));
   if ("caches" in window) {
     const keys = await caches.keys().catch(() => []);
     await Promise.all(keys.map((key) => caches.delete(key))).catch(() => {});
@@ -91,10 +84,11 @@ async function clearBrowserResidue() {
 
 function loadSession() {
   try {
+    const config = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
     const saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "{}");
     return {
-      baseUrl: API_DEFAULT,
-      email: EMAIL_DEFAULT,
+      baseUrl: config.baseUrl || API_DEFAULT,
+      email: config.email || EMAIL_DEFAULT,
       token: saved.token || "",
       user: saved.user || null
     };
@@ -104,6 +98,7 @@ function loadSession() {
 }
 
 function saveSession() {
+  localStorage.setItem(CONFIG_KEY, JSON.stringify({ baseUrl: session.baseUrl, email: session.email }));
   if (session.token) sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token: session.token, user: session.user }));
   else sessionStorage.removeItem(SESSION_KEY);
 }
@@ -490,6 +485,7 @@ async function savePurchase(event) {
     updatedAt: now()
   };
   await saveRecord("purchase", purchase);
+  if (purchase.status === "Recibido") await applyPurchaseToInventory(purchase);
   resetForm("purchase");
   showAlert("Compra guardada en BD.", "ok");
 }
@@ -499,7 +495,61 @@ async function receivePurchase(purchaseId) {
   if (!purchase) return;
   const updated = { ...purchase, status: "Recibido", receivedAt: purchase.receivedAt || now(), updatedAt: now() };
   await saveRecord("purchase", updated);
-  showAlert("Compra recibida; el backend actualizo inventario en BD.", "ok");
+  await applyPurchaseToInventory(updated);
+  showAlert("Compra recibida e inventario actualizado.", "ok");
+}
+
+async function applyPurchaseToInventory(purchase) {
+  const qty = Math.max(1, Number(purchase.qty || 1));
+  const part = purchase.part || purchase.items?.[0]?.part || "Refaccion";
+  const existing = active(state.inventory).find((i) => normalize(displayItem(i)) === normalize(part));
+  const item = existing ? {
+    ...existing,
+    stock: Number(existing.stock || 0) + qty,
+    cost: Number(purchase.cost || existing.cost || 0),
+    subdealerPrice: calculateSubdealer(purchase.cost || existing.cost),
+    updatedAt: now()
+  } : {
+    id: id("inv"),
+    brand: "",
+    model: part,
+    name: part,
+    category: "Refaccion recibida",
+    stock: qty,
+    min: 1,
+    cost: Number(purchase.cost || 0),
+    subdealerPrice: calculateSubdealer(purchase.cost),
+    price: 0,
+    createdAt: now(),
+    updatedAt: now()
+  };
+  await saveRecord("inventory", item);
+  await saveRecord("inventoryMovement", {
+    id: id("mov"),
+    itemId: item.id,
+    itemName: displayItem(item),
+    qty,
+    type: "Entrada",
+    detail: `Compra recibida ${purchase.folio}: ${part}`,
+    refId: purchase.id,
+    createdAt: now()
+  });
+  if (purchase.orderId) {
+    const order = state.orders.find((o) => o.id === purchase.orderId);
+    if (order) {
+      const supplied = [...(order.suppliedParts || []), {
+        id: id("sup"),
+        inventoryId: item.id,
+        purchaseId: purchase.id,
+        part,
+        qty,
+        cost: Number(purchase.cost || 0),
+        totalCost: Number(purchase.cost || 0) * qty,
+        createdAt: now()
+      }];
+      await saveRecord("order", { ...order, parts: [...new Set([...(order.parts || []), item.id])], suppliedParts: supplied, updatedAt: now() });
+    }
+  }
 }
 
 async function savePayment(event) {
@@ -668,29 +718,19 @@ function hydrateSettings() {
 
 async function searchPortal(event) {
   event.preventDefault();
-  const folio = $("portalFolio").value.trim();
-  if (!folio) return;
-  $("portalResult").innerHTML = empty("Consultando BD...");
-  try {
-    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(folio)}?t=${Date.now()}`, {
-      cache: "no-store",
-      headers: { "Cache-Control": "no-store", Pragma: "no-cache" }
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok || !payload.order) {
-      $("portalResult").innerHTML = empty("Orden no encontrada en BD");
-      return;
-    }
-    const order = payload.order;
-    $("portalResult").innerHTML = `
-      <div class="timeline-card">
-        <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
-        <p>${escapeHtml(order.clientName || "Cliente")} | ${escapeHtml(order.status || "")}</p>
-        <div class="timeline">${orderStatuses.map((s) => `<span class="${orderStatuses.indexOf(s) <= orderStatuses.indexOf(order.status) ? "done" : ""}">${escapeHtml(s)}</span>`).join("")}</div>
-      </div>`;
-  } catch (error) {
-    $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
+  const folio = $("portalFolio").value.trim().toLowerCase();
+  const order = active(state.orders).find((o) => String(o.folio || "").toLowerCase() === folio);
+  if (!order) {
+    $("portalResult").innerHTML = empty("Orden no encontrada en BD");
+    return;
   }
+  const client = getClient(order.clientId);
+  $("portalResult").innerHTML = `
+    <div class="timeline-card">
+      <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
+      <p>${escapeHtml(client?.name || "Cliente")} | ${escapeHtml(order.status || "")}</p>
+      <div class="timeline">${orderStatuses.map((s) => `<span class="${orderStatuses.indexOf(s) <= orderStatuses.indexOf(order.status) ? "done" : ""}">${escapeHtml(s)}</span>`).join("")}</div>
+    </div>`;
 }
 
 function active(rows) {
@@ -818,7 +858,6 @@ function escapeHtml(value) {
 }
 
 Object.assign(window, {
-  PCFIX_FRONTEND_VERSION,
   editClient,
   editSupplier,
   editInventory,
