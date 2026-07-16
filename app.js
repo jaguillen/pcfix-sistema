@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-conectividad-20260716-08";
+const PCFIX_FRONTEND_VERSION = "pcfix-fotos-directas-20260716-09";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -970,8 +970,7 @@ async function saveOrder(event) {
   const total = Number($("orderTotal").value || 0);
   const deposit = status === "Entregado" ? total : Number($("orderDeposit").value || 0);
   const orderId = $("orderId").value || id("ord");
-  const pendingEvidenceCount = currentEvidencePhotos.filter((photo) => photo.dataUrl && !photo.path).length;
-  let savedOrder = await saveRecord("order", {
+  const savedOrder = await saveRecord("order", {
     id: orderId,
     folio: existing?.folio || nextOrderFolio(),
     clientId: $("orderClient").value,
@@ -1002,7 +1001,7 @@ async function saveOrder(event) {
     intakeChecklist: readQualityChecklist("intakeChecklist"),
     finalChecklist: readQualityChecklist("finalChecklist"),
     completedAt: status === "Entregado" ? (existing?.completedAt || now()) : "",
-    statusEvidencePhotos: evidenceMetadata(),
+    statusEvidencePhotos: currentEvidencePhotos,
     parts: selectedParts,
     suppliedParts,
     createdAt: existing?.createdAt || now(),
@@ -1018,24 +1017,13 @@ async function saveOrder(event) {
       postSaveWarnings.push(`la solicitud de compra no se creo: ${error.message}`);
     }
   }
-  if (pendingEvidenceCount) {
-    try {
-      await persistEvidencePhotos(savedOrder.id || orderId);
-      savedOrder = await saveRecord("order", {
-        ...savedOrder,
-        statusEvidencePhotos: evidenceMetadata(),
-        updatedAt: now()
-      });
-    } catch (error) {
-      postSaveWarnings.push(`las fotografias no se adjuntaron: ${error.message}`);
-    }
-  }
   if (postSaveWarnings.length) {
     showAlert(`Orden ${savedOrder.folio || ""} guardada en BD; ${postSaveWarnings.join("; ")}. Corrige la conexion y vuelve a guardar para reintentar.`, "error");
     return;
   }
+  const savedWithPhotos = currentEvidencePhotos.length > 0;
   hideOrderForm();
-  showAlert(pendingEvidenceCount ? "Orden y evidencias guardadas de forma segura." : "Orden guardada correctamente en BD.", "ok");
+  showAlert(savedWithPhotos ? "Orden y fotografias guardadas en BD." : "Orden guardada correctamente en BD.", "ok");
 }
 
 async function savePurchase(event) {
@@ -1718,30 +1706,6 @@ function renderEvidencePreview() {
 
 function photoSource(photo = {}) {
   return photo.url || photo.dataUrl || "";
-}
-
-async function persistEvidencePhotos(orderId) {
-  const inlinePhotos = currentEvidencePhotos.filter((photo) => photo.dataUrl && !photo.path);
-  currentEvidencePhotos = currentEvidencePhotos.map(({ url, ...photo }) => photo);
-  if (!inlinePhotos.length) return [];
-  const uploaded = [];
-  for (const photo of inlinePhotos) {
-    const result = await api("/api/files/evidence", {
-      method: "POST",
-      body: JSON.stringify({
-        orderId,
-        files: [{ id: photo.id, name: photo.name, type: photo.type, dataUrl: photo.dataUrl }]
-      })
-    });
-    uploaded.push(...(result.photos || []));
-  }
-  const uploadedById = new Map(uploaded.map((photo) => [photo.id, photo]));
-  currentEvidencePhotos = currentEvidencePhotos.map((photo) => uploadedById.get(photo.id) || photo);
-  return uploaded;
-}
-
-function evidenceMetadata(photos = currentEvidencePhotos) {
-  return photos.filter((photo) => photo?.path).map(({ dataUrl, url, ...photo }) => photo);
 }
 
 function removeEvidencePhoto(photoId) {

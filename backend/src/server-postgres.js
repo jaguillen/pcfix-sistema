@@ -15,7 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-conectividad-20260716-08";
+const backendVersion = "pcfix-backend-fotos-directas-20260716-09";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -28,9 +28,6 @@ if (!jwtSecret || jwtSecret.length < 32) {
 
 const sensitiveDataSecret = process.env.SENSITIVE_DATA_KEY || jwtSecret;
 const sensitiveDataKey = createHash("sha256").update(sensitiveDataSecret).digest();
-const supabaseUrl = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const evidenceBucket = process.env.SUPABASE_EVIDENCE_BUCKET || "pcfix-evidence";
 const productionCorsOrigins = String(process.env.CORS_ORIGIN || "https://pcfix-sistema.onrender.com,https://pcfixcomitan.onrender.com")
   .split(",")
   .map((origin) => origin.trim().replace(/\/$/, ""))
@@ -130,108 +127,8 @@ function decryptSensitive(payload) {
   }
 }
 
-function storageConfigured() {
-  return Boolean(supabaseUrl && supabaseServiceKey);
-}
-
-function storageHeaders(extra = {}) {
-  return {
-    apikey: supabaseServiceKey,
-    Authorization: `Bearer ${supabaseServiceKey}`,
-    ...extra
-  };
-}
-
-function storageObjectPath(path) {
-  return String(path || "").split("/").map(encodeURIComponent).join("/");
-}
-
-async function ensureEvidenceBucket() {
-  if (!storageConfigured()) return false;
-  const current = await fetch(`${supabaseUrl}/storage/v1/bucket/${encodeURIComponent(evidenceBucket)}`, {
-    headers: storageHeaders()
-  });
-  if (current.ok) return true;
-  if ([401, 403].includes(current.status)) {
-    throw businessError("Supabase Storage rechazo la clave. Revisa SUPABASE_SERVICE_ROLE_KEY en el backend de Render.", "storage_credentials_rejected", 502);
-  }
-  if (current.status !== 404) throw businessError(`No se pudo consultar Supabase Storage (${current.status})`, "storage_unavailable", 502);
-  const created = await fetch(`${supabaseUrl}/storage/v1/bucket`, {
-    method: "POST",
-    headers: storageHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({
-      id: evidenceBucket,
-      name: evidenceBucket,
-      public: false,
-      file_size_limit: 3 * 1024 * 1024,
-      allowed_mime_types: ["image/jpeg", "image/png", "image/webp"]
-    })
-  });
-  if (!created.ok && created.status !== 409) {
-    throw businessError(`No se pudo crear el bucket privado de evidencias (${created.status})`, "storage_bucket_failed", 502);
-  }
-  return true;
-}
-
-function decodeEvidenceDataUrl(dataUrl) {
-  const match = String(dataUrl || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([a-z0-9+/=\r\n]+)$/i);
-  if (!match) throw businessError("Formato de evidencia no permitido", "invalid_evidence_format", 400);
-  const buffer = Buffer.from(match[2], "base64");
-  if (!buffer.length || buffer.length > 3 * 1024 * 1024) {
-    throw businessError("Cada fotografia debe pesar menos de 3 MB", "evidence_too_large", 400);
-  }
-  const mime = match[1].toLowerCase();
-  const validSignature = mime === "image/jpeg"
-    ? buffer[0] === 0xff && buffer[1] === 0xd8
-    : mime === "image/png"
-      ? buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-      : buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP";
-  if (!validSignature) throw businessError("El contenido de la fotografia no coincide con su formato", "invalid_evidence_signature", 400);
-  return { buffer, mime };
-}
-
-async function uploadEvidencePhoto(orderId, photo) {
-  const { buffer, mime } = decodeEvidenceDataUrl(photo.dataUrl);
-  const extension = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[mime];
-  const safeOrderId = String(orderId || "orden").replace(/[^a-z0-9_-]/gi, "_");
-  const path = `orders/${safeOrderId}/${Date.now()}-${randomBytes(6).toString("hex")}.${extension}`;
-  const response = await fetch(`${supabaseUrl}/storage/v1/object/${encodeURIComponent(evidenceBucket)}/${storageObjectPath(path)}`, {
-    method: "POST",
-    headers: storageHeaders({ "Content-Type": mime, "x-upsert": "false" }),
-    body: buffer
-  });
-  if (!response.ok) throw businessError("No se pudo guardar evidencia en Storage", "evidence_upload_failed", 502);
-  return {
-    id: photo.id || id("photo"),
-    name: String(photo.name || `evidencia.${extension}`).slice(0, 120),
-    type: mime,
-    path,
-    uploadedAt: now()
-  };
-}
-
-async function signEvidencePath(path, expiresIn = 900) {
-  if (!storageConfigured() || !path) return "";
-  const response = await fetch(`${supabaseUrl}/storage/v1/object/sign/${encodeURIComponent(evidenceBucket)}/${storageObjectPath(path)}`, {
-    method: "POST",
-    headers: storageHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ expiresIn })
-  });
-  if (!response.ok) return "";
-  const payload = await response.json().catch(() => ({}));
-  const signed = payload.signedURL || payload.signedUrl || "";
-  if (!signed) return "";
-  if (/^https?:\/\//i.test(signed)) return signed;
-  const storagePath = signed.startsWith("/storage/v1/") ? signed : `/storage/v1${signed.startsWith("/") ? "" : "/"}${signed}`;
-  return new URL(storagePath, supabaseUrl).href;
-}
-
-async function materializeEvidencePhotos(photos, expiresIn = 900) {
-  return Promise.all((photos || []).slice(0, 12).map(async (photo) => {
-    if (photo?.dataUrl) return photo;
-    const url = await signEvidencePath(photo?.path, expiresIn);
-    return { ...photo, url };
-  }));
+async function materializeEvidencePhotos(photos) {
+  return (photos || []).filter((photo) => photo?.dataUrl || photo?.url).slice(0, 12);
 }
 
 function normalizeRecord(row) {
@@ -1511,7 +1408,7 @@ app.use(cors({
   allowedHeaders: ["Authorization", "Content-Type", "Cache-Control", "Pragma"]
 }));
 app.use(express.json({
-  limit: "12mb",
+  limit: "20mb",
   verify(req, _res, buffer) {
     if (req.originalUrl?.startsWith("/api/whatsapp/webhook")) req.rawBody = Buffer.from(buffer);
   }
@@ -2431,33 +2328,6 @@ app.post("/api/users/:id/deactivate", requireAuth, requireRole("admin"), async (
   res.json({ ok: true });
 });
 
-app.post("/api/files/base64", requireAuth, requireRole("admin", "manager", "technician"), (_req, res) => {
-  res.status(410).json({ error: "Carga evidencias mediante /api/files/evidence; el almacenamiento base64 fue retirado." });
-});
-
-app.post("/api/files/evidence", requireAuth, requireRole("admin", "manager", "technician"), async (req, res, next) => {
-  try {
-    if (!storageConfigured()) {
-      return res.status(503).json({
-        error: "Storage privado no configurado",
-        code: "storage_not_configured",
-        required: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
-      });
-    }
-    const orderId = String(req.body?.orderId || "").trim();
-    const files = Array.isArray(req.body?.files) ? req.body.files : [];
-    if (!orderId) return res.status(400).json({ error: "orderId requerido" });
-    if (!files.length || files.length > 6) return res.status(400).json({ error: "Adjunta entre 1 y 6 fotografias por carga" });
-    await ensureEvidenceBucket();
-    const photos = [];
-    for (const file of files) photos.push(await uploadEvidencePhoto(orderId, file));
-    await audit(req.user.sub, "evidence_upload", "order", orderId, `${photos.length} archivo(s)`);
-    res.status(201).json({ photos });
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.get("/api/whatsapp/webhook", (req, res) => {
   const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || "";
   if (req.query["hub.verify_token"] === verifyToken) return res.send(req.query["hub.challenge"]);
@@ -2541,7 +2411,6 @@ app.use((error, _req, res, _next) => {
 });
 
 await initDb();
-ensureEvidenceBucket().catch((error) => console.warn(`Storage de evidencias pendiente: ${error.message}`));
 
 app.listen(port, () => {
   console.log(`PCFix backend Postgres listo en puerto ${port}`);
