@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-09";
+const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-10";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -93,6 +93,10 @@ async function boot() {
   wireEvents();
   clearBrowserResidue().catch(() => {});
   showLoginAlert(`Frontend ${PCFIX_FRONTEND_VERSION}`, "ok");
+  if (isPublicPortalRequest()) {
+    enablePublicPortalMode();
+    return;
+  }
   if (session.token) {
     $("loginScreen").classList.add("hidden");
     $("app").classList.remove("hidden");
@@ -102,6 +106,27 @@ async function boot() {
       showLoginAlert("Sesion expirada. Ingresa de nuevo.", "error");
     }
   }
+}
+
+function isPublicPortalRequest() {
+  const params = new URLSearchParams(window.location.search);
+  return params.has("portal") || params.has("seguimiento") || params.has("folio") || params.has("orden") || params.has("whatsapp") || window.location.hash.toLowerCase().includes("portal");
+}
+
+function enablePublicPortalMode() {
+  const params = new URLSearchParams(window.location.search);
+  const lookup = params.get("folio") || params.get("orden") || params.get("whatsapp") || params.get("q") || "";
+  document.body.classList.add("public-portal-mode");
+  $("loginScreen").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  activeView = "portal";
+  document.querySelectorAll(".view").forEach((section) => section.classList.remove("active"));
+  $("portalView").classList.add("active");
+  $("viewTitle").textContent = "Seguimiento PCFix";
+  $("viewSubtitle").textContent = "Consulta el avance de tu reparacion.";
+  $("portalFolio").value = lookup;
+  $("portalResult").innerHTML = portalWelcome();
+  if (lookup) $("portalForm").requestSubmit();
 }
 
 async function clearBrowserResidue() {
@@ -1316,7 +1341,7 @@ async function searchPortal(event) {
       headers: { "Cache-Control": "no-store", Pragma: "no-cache" }
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok || !payload.order) {
+    if (!response.ok || !payload.order) {
       $("portalResult").innerHTML = empty("Orden no encontrada en BD");
       return;
     }
@@ -1325,24 +1350,59 @@ async function searchPortal(event) {
     currentPortalOrder = order;
     currentPortalClient = client;
     const delivered = order.status === "Entregado";
-    $("portalResult").innerHTML = `
-      <div class="timeline-card portal-premium">
-        <div class="status-visual ${statusClass(order.status)}">
-          <div class="device-animation"><span></span><i></i></div>
+    $("portalResult").innerHTML = renderPortalOrder(order, client);
+  } catch (error) {
+    $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
+  }
+}
+
+function portalWelcome() {
+  return `
+    <div class="portal-premium portal-empty">
+      <div class="status-visual received"><div class="device-animation"><span></span><i></i></div></div>
+      <h2>Consulta tu reparacion</h2>
+      <p>Ingresa tu folio de orden o tu numero de WhatsApp para ver el seguimiento.</p>
+    </div>`;
+}
+
+function renderPortalOrder(order, client = {}) {
+  const delivered = order.status === "Entregado";
+  const progress = getStatusProgress(order.status);
+  const parts = order.suppliedParts || [];
+  const history = order.statusHistory || [];
+  return `
+      <div class="portal-premium portal-order-card">
+        <div class="portal-hero-premium">
+          <div class="status-visual ${statusClass(order.status)}">
+            <div class="device-animation"><span></span><i></i></div>
+          </div>
+          <div>
+            <span class="portal-eyebrow">Seguimiento de reparacion</span>
+            <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
+            <p>${escapeHtml(client.name || "Cliente")} | ${escapeHtml(order.status || "")}</p>
+          </div>
+          <strong>${progress}%</strong>
         </div>
-        <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
-        <p>${escapeHtml(client.name || "Cliente")} | ${escapeHtml(order.status || "")}</p>
+        <div class="portal-progress"><i style="width:${progress}%"></i></div>
         <div class="timeline">${orderStatuses.map((s) => `<span class="${orderStatuses.indexOf(s) <= orderStatuses.indexOf(order.status) ? "done" : ""}">${escapeHtml(s)}</span>`).join("")}</div>
         <div class="portal-detail">
           <strong>Garantia</strong><span>${Number(order.warrantyDays || 90)} dias</span>
           <strong>Ultima actualizacion</strong><span>${escapeHtml(formatDate(order.updatedAt || order.updated_at || ""))}</span>
+          <strong>Tecnico</strong><span>${escapeHtml(order.technician || "Equipo PCFix")}</span>
+          <strong>Serie / IMEI</strong><span>${escapeHtml(order.serial || "No registrado")}</span>
+          <strong>Total</strong><span>${money.format(Number(order.total || 0))}</span>
+          <strong>Saldo</strong><span>${money.format(Math.max(0, Number(order.total || 0) - Number(order.deposit || 0)))}</span>
         </div>
+        <div class="portal-info-grid">
+          <article><strong>Falla / diagnostico</strong><span>${escapeHtml(order.issue || "En revision")}</span></article>
+          <article><strong>Condiciones del equipo</strong><span>${escapeHtml(order.physicalState || order.notes || "Sin condiciones registradas")}</span></article>
+          <article><strong>Accesorios recibidos</strong><span>${escapeHtml(order.accessories || "Sin accesorios registrados")}</span></article>
+          <article><strong>Refacciones utilizadas</strong><span>${parts.length ? parts.map((part) => `${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}`).join(", ") : "Sin refacciones registradas"}</span></article>
+        </div>
+        ${history.length ? `<div class="portal-history"><strong>Historial</strong>${history.map((item) => `<span>${escapeHtml(item.status || "")} | ${escapeHtml(formatDate(item.at || ""))}</span>`).join("")}</div>` : ""}
         ${(order.statusEvidencePhotos || []).length ? `<div class="photo-strip readonly">${(order.statusEvidencePhotos || []).slice(0, 6).map((photo) => `<figure><img src="${photo.dataUrl}" alt="${escapeHtml(photo.name || "Evidencia")}"></figure>`).join("")}</div>` : ""}
         ${delivered ? `<div class="record-actions"><button class="btn primary" type="button" onclick="printPortalOrder()">Descargar PDF</button></div>` : ""}
       </div>`;
-  } catch (error) {
-    $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
-  }
 }
 
 function printPortalOrder() {
@@ -1351,6 +1411,12 @@ function printPortalOrder() {
     return;
   }
   printOrderDocument(currentPortalOrder, { context: "delivery", customerCopy: true, client: currentPortalClient || {} });
+}
+
+function getStatusProgress(status = "") {
+  const index = orderStatuses.indexOf(status);
+  if (index < 0) return 12;
+  return Math.round(((index + 1) / orderStatuses.length) * 100);
 }
 
 async function loadAdminReports() {
@@ -1637,7 +1703,8 @@ function orderMessage(order) {
 }
 
 function trackingMessage(order) {
-  return `Hola, puedes consultar el seguimiento visual de tu reparacion con el folio ${order.folio || ""} en el portal de PCFix. Estado actual: ${order.status || ""}.`;
+  const portalUrl = `${window.location.origin}${window.location.pathname}?portal=1&folio=${encodeURIComponent(order.folio || "")}`;
+  return `Hola, puedes consultar el seguimiento visual de tu reparacion con el folio ${order.folio || ""} en el portal de PCFix: ${portalUrl}. Estado actual: ${order.status || ""}.`;
 }
 
 function deliveryMessage(order) {

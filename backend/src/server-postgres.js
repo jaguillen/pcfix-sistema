@@ -12,7 +12,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-bd-directa-20260715-07";
+const backendVersion = "pcfix-backend-bd-directa-20260715-08";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -956,12 +956,13 @@ app.get("/api/public/orders/:folio", async (req, res) => {
   const folio = lookup.toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
   const digits = lookup.replace(/\D/g, "");
+  const looksLikePhone = digits.length >= 8 && !/[a-z]/i.test(lookup);
   const normalizedResult = trackingCode
     ? await query(
         "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
         [folio, trackingCode]
       )
-    : digits.length >= 8
+    : looksLikePhone
       ? await query(
           `SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email
            FROM service_orders o
