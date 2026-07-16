@@ -2,7 +2,7 @@
 
 ## Resultado
 
-La version `pcfix-premium-operativo-20260716-01` fortalece los procesos que mas afectan la confianza del negocio: lectura consistente desde PostgreSQL, inventario, compras recibidas, costos por orden, pagos, fechas prometidas y trabajo simultaneo.
+La version `pcfix-modulos-premium-20260716-02` fortalece los procesos que mas afectan la confianza del negocio: lectura consistente desde PostgreSQL, inventario, compras recibidas, costos por orden, pagos, fechas prometidas y trabajo simultaneo.
 
 ## Cambios implementados
 
@@ -13,7 +13,7 @@ La version `pcfix-premium-operativo-20260716-01` fortalece los procesos que mas 
 - Pagos y saldo de orden actualizados en una sola operacion atomica.
 - Control de concurrencia por `updated_at` para evitar sobrescribir el trabajo de otra persona.
 - Relaciones nuevas protegidas con llaves foraneas y limpieza de referencias vacias o huerfanas.
-- Prioridad, entrega prometida, autorizacion, costo interno de mano de obra y fecha de terminacion por orden.
+- Prioridad, entrega prometida, autorizacion, costo real de refacciones y fecha de terminacion por orden.
 - Dashboard con ordenes vencidas, ciclo promedio, costo real y margen de contribucion.
 - SKU y ubicacion fisica en inventario.
 - Verificaciones de integridad para compras recibidas sin movimiento, ordenes entregadas con saldo y costos de refaccion descuadrados.
@@ -41,5 +41,9 @@ La version `pcfix-premium-operativo-20260716-01` fortalece los procesos que mas 
 - Microsoft Field Service, SLA en ordenes: https://learn.microsoft.com/en-us/dynamics365/field-service/sla-work-orders
 - WCAG 2.2: https://www.w3.org/TR/WCAG22/
 - NOM-174-SCFI-2007: https://www.dof.gob.mx/normasOficiales/2845/SEECO2/SEECO2.htm
+
+## Revision de garantia
+
+La garantia del sistema queda fijada en 90 dias naturales. La redaccion se apoya principalmente en los articulos 77 a 83 de la Ley Federal de Proteccion al Consumidor: plazo minimo, contenido claro de la poliza, lugar y mecanismo de reclamacion, reparacion sin costo por deficiencias imputables al servicio y suspension del computo mientras el equipo permanece en reparacion por garantia. La NOM-174-SCFI-2007 y contratos registrados por Profeco se usaron como referencia de buenas practicas para documentar diagnostico, autorizacion, partes sustituidas y resguardo; su aplicabilidad concreta a telefonos y computadoras debe confirmarse con asesoria juridica local antes de adoptar un contrato de adhesion definitivo.
 
 Este documento describe controles de producto y no sustituye asesoria juridica, contable o de seguridad especializada.

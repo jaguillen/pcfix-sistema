@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-premium-operativo-20260716-01`
+`pcfix-modulos-premium-20260716-02`
 
 ## Que subir a GitHub
 
@@ -49,7 +49,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-premium-operativo-20260716-01
+pcfix-modulos-premium-20260716-02
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -59,7 +59,7 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-premium-operativo-20260716-01
+pcfix-backend-modulos-premium-20260716-02
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:
@@ -80,3 +80,10 @@ select count(*) from purchases where archived = false;
 - Pagos y saldo de orden se registran en una sola operacion atomica.
 - Evidencias fotograficas optimizadas antes de enviarse.
 - Actualizacion automatica desde BD al volver a la ventana y cada 45 segundos cuando no hay formularios en uso.
+- Clientes y selectores ordenados alfabeticamente.
+- Tecnicos registrados como usuarios: la API rechaza nombres libres o tecnicos inactivos.
+- Refacciones sugeridas por modelo y limitadas a existencias positivas.
+- Cotizacion emergente a proveedor cuando no existe una pieza compatible.
+- Constructor de compras multiproducto con subtotales y total estimado.
+- Caja limitada a ordenes con saldo pendiente.
+- Garantia fija de 90 dias naturales con condiciones incorporadas a la orden y al PDF.

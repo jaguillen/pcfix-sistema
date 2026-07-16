@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-premium-operativo-20260716-01">
+    <meta name="pcfix-version" content="pcfix-modulos-premium-20260716-02">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -56,7 +56,6 @@
           </div>
           <div class="topbar-actions">
             <input id="searchInput" type="search" placeholder="Buscar...">
-            <button id="refreshBtn" class="btn ghost">Actualizar BD</button>
             <button id="newOrderBtn" class="btn primary">Nueva orden</button>
           </div>
         </header>
@@ -130,16 +129,15 @@
               <label>Cliente<select id="orderClient" required></select></label>
               <label>Marca / modelo<input id="orderDevice" list="modelSuggestions" required></label>
               <datalist id="modelSuggestions"></datalist>
-              <label>Tecnico<input id="orderTechnician"></label>
+              <label>Tecnico<select id="orderTechnician" required></select></label>
               <label>Serie / IMEI<input id="orderSerial"></label>
               <label>Estatus<select id="orderStatus"></select></label>
               <label>Prioridad<select id="orderPriority"><option>Baja</option><option selected>Normal</option><option>Alta</option><option>Urgente</option></select></label>
               <label>Entrega prometida<input id="orderPromisedAt" type="datetime-local"></label>
               <label>Autorizacion<select id="orderApprovalStatus"><option>Pendiente</option><option>Aprobado</option><option>Rechazado</option></select></label>
               <label>Total<input id="orderTotal" type="number" min="0" step="0.01" value="0"></label>
-              <label>Costo interno de mano de obra<input id="orderLaborCost" type="number" min="0" step="0.01" value="0"></label>
               <label>Anticipo<input id="orderDeposit" type="number" min="0" step="0.01" value="0"></label>
-              <label>Garantia dias<input id="orderWarrantyDays" type="number" min="90" value="90"></label>
+              <label>Garantia (dias naturales)<input id="orderWarrantyDays" type="number" value="90" readonly></label>
             </div>
             <label>Falla / diagnostico<textarea id="orderIssue" rows="3" required></textarea></label>
             <div class="common-failures">
@@ -169,6 +167,7 @@
                   <button id="addOrderPartBtn" class="btn ghost" type="button">Agregar</button>
                 </div>
                 <div id="selectedPartsBox" class="selected-parts premium-selected"></div>
+                <div id="partAvailabilityHint" class="part-availability-hint"></div>
               </div>
             </label>
             <label>Pieza sugerida para compra<input id="orderQuotePart" placeholder="Se autocompleta segun diagnostico"></label>
@@ -249,14 +248,19 @@
               <input id="purchaseId" type="hidden">
               <label>Proveedor<select id="purchaseSupplier" required></select></label>
               <label>Orden relacionada<select id="purchaseOrder"></select></label>
-              <label>Pieza solicitada<input id="purchasePart" required></label>
-              <div class="panel subtle-panel">
-                <div class="panel-header"><h2>Productos de la compra</h2><button id="addPurchaseItemBtn" class="btn ghost" type="button">Agregar producto</button></div>
+              <input id="purchasePart" type="hidden">
+              <input id="purchaseQty" type="hidden" value="1">
+              <input id="purchaseCost" type="hidden" value="0">
+              <div class="purchase-builder">
+                <div class="purchase-builder-head">
+                  <div><strong>Productos solicitados</strong><span>Agrega todas las piezas de esta cotizacion.</span></div>
+                  <button id="addPurchaseItemBtn" class="btn ghost" type="button">Agregar producto</button>
+                </div>
+                <div class="purchase-column-head"><span>Producto</span><span>Cantidad</span><span>Costo unitario</span><span>Subtotal</span><span></span></div>
                 <div id="purchaseItems" class="purchase-items"></div>
+                <div class="purchase-total"><span>Total estimado</span><strong id="purchaseItemsTotal">$0.00</strong></div>
               </div>
               <div class="form-grid">
-                <label>Cantidad<input id="purchaseQty" type="number" min="1" value="1"></label>
-                <label>Costo<input id="purchaseCost" type="number" min="0" step="0.01" value="0"></label>
                 <label>Estatus<select id="purchaseStatus"></select></label>
               </div>
               <label>Notas<textarea id="purchaseNotes" rows="3"></textarea></label>
@@ -274,6 +278,7 @@
             <form id="paymentForm" class="panel form-panel">
               <div class="panel-header"><h2>Pago</h2></div>
               <label>Orden<select id="paymentOrder" required></select></label>
+              <div id="paymentBalanceHint" class="form-hint"></div>
               <label>Monto<input id="paymentAmount" type="number" min="0" step="0.01" required></label>
               <label>Metodo<select id="paymentMethod"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select></label>
               <label>Referencia<input id="paymentReference"></label>
@@ -359,9 +364,35 @@
               <div id="adminHealthPanel" class="compact-list"></div>
             </section>
           </div>
+          <section id="technicianAdminPanel" class="panel technician-admin">
+            <div class="panel-header"><div><h2>Tecnicos registrados</h2><p>Solo estos usuarios pueden asignarse a una orden.</p></div><span id="technicianCount" class="count-pill">0</span></div>
+            <div class="technician-layout">
+              <form id="technicianForm" class="technician-form">
+                <label>Nombre<input id="technicianName" required></label>
+                <label>Correo de acceso<input id="technicianEmail" type="email" required></label>
+                <label>Contrasena temporal<input id="technicianPassword" type="password" minlength="12" required></label>
+                <button class="btn primary" type="submit">Registrar tecnico</button>
+              </form>
+              <div id="technicianList" class="records-list"></div>
+            </div>
+          </section>
         </section>
       </main>
     </div>
+
+    <dialog id="purchaseSuggestionDialog" class="purchase-dialog">
+      <form id="suggestedPurchaseForm" class="dialog-surface">
+        <div class="dialog-head"><div><span>Cotizacion necesaria</span><h2>Solicitar pieza a proveedor</h2></div><button id="closePurchaseSuggestionBtn" class="icon-button" type="button" aria-label="Cerrar">&times;</button></div>
+        <p id="suggestedPurchaseContext" class="dialog-context"></p>
+        <label>Pieza requerida<input id="suggestedPurchasePart" required></label>
+        <div class="form-grid">
+          <label>Proveedor<select id="suggestedPurchaseSupplier" required></select></label>
+          <label>Cantidad<input id="suggestedPurchaseQty" type="number" min="1" value="1" required></label>
+        </div>
+        <label>Notas<textarea id="suggestedPurchaseNotes" rows="3" placeholder="Calidad requerida, color, version o urgencia..."></textarea></label>
+        <div class="dialog-actions"><button class="btn ghost" id="cancelPurchaseSuggestionBtn" type="button">Cancelar</button><button class="btn primary" type="submit">Crear solicitud de cotizacion</button></div>
+      </form>
+    </dialog>
 
     <script src="app.js"></script>
   </body>

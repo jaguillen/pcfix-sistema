@@ -13,7 +13,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-premium-operativo-20260716-01";
+const backendVersion = "pcfix-backend-modulos-premium-20260716-02";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -613,7 +613,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
         data.technician || "", data.serial || "", data.status || "Recibido", data.priority || "Normal",
         data.promisedAt || "", data.approvalStatus || "Pendiente", data.issue || "", data.notes || "",
         data.accessories || "", data.physicalState || "", Math.max(0, asNumber(data.total)),
-        Math.max(0, asNumber(data.laborCost)), Math.max(0, asNumber(data.deposit)), Boolean(data.paid),
+        0, Math.max(0, asNumber(data.deposit)), Boolean(data.paid),
         Math.max(0, Number(data.warrantyDays || 90)), data.warrantyTerms || "", Boolean(data.approved || data.approvalStatus === "Aprobado"),
         data.quotePartName || "", data.quoteSupplierId || null, Boolean(archived || data.archived), asJson(data.statusHistory),
         asJson(data.statusEvidencePhotos), JSON.stringify(data), created, updated,
@@ -965,12 +965,20 @@ async function prepareRecordForSave(type, requestedId, record) {
     const statuses = new Set(["Recibido", "Diagnostico", "Esperando pieza", "En reparacion", "Listo", "Entregado", "Cancelado"]);
     const priorities = new Set(["Baja", "Normal", "Alta", "Urgente"]);
     const approvals = new Set(["Pendiente", "Aprobado", "Rechazado"]);
+    const technicianResult = data.technicianId
+      ? await query("SELECT id, name FROM users WHERE id = $1 AND role = 'technician' AND active = TRUE LIMIT 1", [data.technicianId])
+      : await query("SELECT id, name FROM users WHERE lower(name) = lower($1) AND role = 'technician' AND active = TRUE LIMIT 1", [String(data.technician || "")]);
+    const technician = technicianResult.rows[0];
+    if (!technician) throw businessError("Selecciona un tecnico activo registrado en Configuracion", "registered_technician_required", 400);
+    data.technicianId = technician.id;
+    data.technician = technician.name;
     if (!statuses.has(data.status || "Recibido")) throw businessError("Estatus de orden invalido", "invalid_order_status", 400);
     if (!priorities.has(data.priority || "Normal")) throw businessError("Prioridad invalida", "invalid_priority", 400);
     if (!approvals.has(data.approvalStatus || "Pendiente")) throw businessError("Autorizacion invalida", "invalid_approval", 400);
     if ((data.approvalStatus || "Pendiente") === "Aprobado" && !data.customerAuthorization) {
       throw businessError("Falta registrar la autorizacion del cliente", "customer_authorization_required", 400);
     }
+    data.warrantyDays = 90;
     if (data.status === "Entregado") {
       data.deposit = Math.max(0, asNumber(data.total));
       data.paid = true;
@@ -1085,7 +1093,7 @@ function tableForType(type) {
 
 function canWriteType(user, type) {
   if (user?.role === "admin" || user?.role === "manager") return true;
-  return user?.role === "technician" && ["client", "order", "appointment", "warrantyClaim", "payment"].includes(type);
+  return user?.role === "technician" && ["client", "order", "appointment", "warrantyClaim", "payment", "purchase"].includes(type);
 }
 
 async function lockTypedRecord(type, recordId) {
@@ -1251,7 +1259,7 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
 
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.user }));
 
-app.get("/api/state", requireAuth, async (_req, res) => {
+app.get("/api/state", requireAuth, async (req, res) => {
   const definitions = [
     ["settings", "settings"],
     ["clients", "client"],
@@ -1272,6 +1280,15 @@ app.get("/api/state", requireAuth, async (_req, res) => {
       ? rows[0]?.data || null
       : rows.map((row) => row.data || row);
   }
+  const technicians = await query(
+    "SELECT id, name, email FROM users WHERE active = TRUE AND role = 'technician' ORDER BY lower(name), lower(email)"
+  );
+  const canSeeTechnicianEmail = ["admin", "manager"].includes(req.user?.role);
+  payload.technicians = technicians.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    ...(canSeeTechnicianEmail ? { email: row.email } : {})
+  }));
   res.json({ ok: true, at: now(), data: payload });
 });
 
@@ -1328,6 +1345,12 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
   if (!canWriteType(req.user, type)) return res.status(403).json({ error: "Tu rol no puede modificar este modulo" });
   const record = req.body?.data || {};
+  if (req.user?.role === "technician" && type === "purchase") {
+    const hasCost = asNumber(record.cost) > 0 || (record.items || []).some((item) => asNumber(item.cost) > 0);
+    if ((record.status || "Cotizando") !== "Cotizando" || hasCost) {
+      return res.status(403).json({ error: "El tecnico solo puede crear solicitudes de cotizacion sin costo; Compras debe confirmar precio y recepcion." });
+    }
+  }
   const requestedId = req.body?.id || record.id;
   const expectedUpdatedAt = String(req.body?.expectedUpdatedAt || "");
   const saveAttempt = async (forcedId = requestedId) => withTransaction(async () => {
@@ -1570,8 +1593,8 @@ async function getAnalyticsReport() {
       SELECT
         COALESCE(SUM(o.total), 0) AS revenue,
         COALESCE(SUM(COALESCE(c.parts_cost, 0)), 0) AS parts_cost,
-        COALESCE(SUM(o.labor_cost), 0) AS labor_cost,
-        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0) - o.labor_cost), 0) AS gross_margin,
+        0::numeric AS labor_cost,
+        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0)), 0) AS gross_margin,
         COALESCE(SUM(o.deposit), 0) AS collected,
         COALESCE(SUM(GREATEST(o.total - GREATEST(o.deposit, COALESCE(p.payments, 0)), 0)), 0) AS receivables
       FROM service_orders o
@@ -1897,6 +1920,7 @@ app.get("/api/users", requireAuth, requireRole("admin", "manager"), async (_req,
 app.post("/api/users", requireAuth, requireRole("admin"), async (req, res) => {
   const { name, email, password, role = "technician" } = req.body || {};
   if (!name || !email || !password) return res.status(400).json({ error: "Nombre, email y password son requeridos" });
+  if (String(password).length < 12) return res.status(400).json({ error: "La contrasena debe tener al menos 12 caracteres" });
   if (!["admin", "manager", "technician", "viewer"].includes(role)) return res.status(400).json({ error: "Rol invalido" });
   const userId = id("usr");
   try {
@@ -1912,6 +1936,18 @@ app.post("/api/users", requireAuth, requireRole("admin"), async (req, res) => {
 });
 
 app.post("/api/users/:id/deactivate", requireAuth, requireRole("admin"), async (req, res) => {
+  const userResult = await query("SELECT name FROM users WHERE id = $1 AND active = TRUE LIMIT 1", [req.params.id]);
+  const user = userResult.rows[0];
+  if (!user) return res.status(404).json({ error: "Tecnico no encontrado" });
+  const assigned = await query(
+    `SELECT COUNT(*)::int AS total FROM service_orders
+     WHERE archived = FALSE AND status NOT IN ('Entregado','Cancelado')
+       AND (raw_data->>'technicianId' = $1 OR lower(technician) = lower($2))`,
+    [req.params.id, user.name]
+  );
+  if (assigned.rows[0]?.total > 0) {
+    return res.status(409).json({ error: `Reasigna primero ${assigned.rows[0].total} orden(es) activas de este tecnico.` });
+  }
   await query("UPDATE users SET active = FALSE WHERE id = $1", [req.params.id]);
   await audit(req.user.sub, "deactivate_user", "user", req.params.id, "");
   res.json({ ok: true });
