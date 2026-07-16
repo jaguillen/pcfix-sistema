@@ -2555,6 +2555,7 @@ label {
 .insight span, .compact-list span { color: #667085; font-size: 13px; }
 .insight.warn { border-color: #FEDF89; background: #FFFCF5; }
 .insight.ok { border-color: #ABEFC6; background: #F6FEF9; }
+.insight.danger { border-color: #FECDCA; background: #FFFBFA; }
 .bar-chart { display: grid; gap: 12px; }
 .bar-row {
   display: grid;
@@ -2799,6 +2800,47 @@ label {
 .status-inline select {
   min-height: 38px;
   padding: 8px 10px;
+}
+.sla-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid #D1F4F7;
+  border-radius: 8px;
+  background: #F5FCFD;
+  font-size: 12px;
+}
+.sla-line strong { color: var(--pcfix-blue); font-size: 12px; }
+.sla-line.overdue { border-color: #FECDCA; background: #FFFBFA; }
+.sla-line.overdue strong, .sla-line.overdue span { color: #B42318; }
+.legal-controls {
+  padding: 14px;
+  border: 1px solid var(--pcfix-border);
+  border-radius: 8px;
+  background: #FBFDFF;
+}
+.check-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+}
+.check-field input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--pcfix-cyan);
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(32, 199, 216, .42);
+  outline-offset: 2px;
 }
 .common-failures {
   display: grid;

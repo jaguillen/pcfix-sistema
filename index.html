@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-rebuild-bd-directa-manual-20260715-10">
+    <meta name="pcfix-version" content="pcfix-premium-operativo-20260716-01">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -61,7 +61,7 @@
           </div>
         </header>
 
-        <section id="alertBox" class="alert hidden"></section>
+        <section id="alertBox" class="alert hidden" role="status" aria-live="polite"></section>
 
         <section id="dashboardView" class="view active">
           <div class="metrics-grid">
@@ -71,6 +71,8 @@
             <article class="metric"><span>Inventario bajo</span><strong id="metricLowStock">0</strong></article>
             <article class="metric"><span>Ingresos</span><strong id="metricRevenue">$0</strong></article>
             <article class="metric"><span>Margen real</span><strong id="metricMargin">0%</strong></article>
+            <article class="metric"><span>Ordenes vencidas</span><strong id="metricOverdue">0</strong></article>
+            <article class="metric"><span>Ciclo promedio</span><strong id="metricCycle">0 dias</strong></article>
           </div>
           <section class="premium-grid">
             <article class="panel">
@@ -131,7 +133,11 @@
               <label>Tecnico<input id="orderTechnician"></label>
               <label>Serie / IMEI<input id="orderSerial"></label>
               <label>Estatus<select id="orderStatus"></select></label>
+              <label>Prioridad<select id="orderPriority"><option>Baja</option><option selected>Normal</option><option>Alta</option><option>Urgente</option></select></label>
+              <label>Entrega prometida<input id="orderPromisedAt" type="datetime-local"></label>
+              <label>Autorizacion<select id="orderApprovalStatus"><option>Pendiente</option><option>Aprobado</option><option>Rechazado</option></select></label>
               <label>Total<input id="orderTotal" type="number" min="0" step="0.01" value="0"></label>
+              <label>Costo interno de mano de obra<input id="orderLaborCost" type="number" min="0" step="0.01" value="0"></label>
               <label>Anticipo<input id="orderDeposit" type="number" min="0" step="0.01" value="0"></label>
               <label>Garantia dias<input id="orderWarrantyDays" type="number" min="90" value="90"></label>
             </div>
@@ -166,6 +172,10 @@
               </div>
             </label>
             <label>Pieza sugerida para compra<input id="orderQuotePart" placeholder="Se autocompleta segun diagnostico"></label>
+            <div class="form-grid legal-controls">
+              <label>Refacciones sustituidas<select id="orderReplacedPartsDisposition"><option>Entregar al cliente</option><option>Cliente renuncia a recibirlas</option><option>Residuo de manejo especial</option></select></label>
+              <label class="check-field"><input id="orderCustomerAuthorization" type="checkbox"> Autorizacion del cliente registrada</label>
+            </div>
             <div class="form-actions">
               <button class="btn primary" type="submit">Guardar orden en BD</button>
               <button id="printOrderBtn" class="btn ghost" type="button">PDF / imprimir</button>
@@ -192,6 +202,8 @@
               <div class="form-grid">
                 <label>Marca<input id="itemBrand" required></label>
                 <label>Modelo<input id="itemModel" required></label>
+                <label>SKU / codigo<input id="itemSku" placeholder="Ej. PAN-A38-OLED"></label>
+                <label>Ubicacion<input id="itemLocation" placeholder="Ej. A-02"></label>
                 <label>Categoria<input id="itemCategory" list="categorySuggestions" required></label>
                 <datalist id="categorySuggestions"></datalist>
                 <label>Stock<input id="itemStock" type="number" min="0" value="1"></label>

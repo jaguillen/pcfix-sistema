@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-rebuild-bd-directa-manual-20260715-10";
+const PCFIX_FRONTEND_VERSION = "pcfix-premium-operativo-20260716-01";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -7,6 +7,7 @@ const facebookReviewUrl = "https://www.facebook.com/pcfixcomitan";
 
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const dateFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
+const dateTimeFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short" });
 const orderStatuses = ["Recibido", "Diagnostico", "Esperando pieza", "En reparacion", "Listo", "Entregado", "Cancelado"];
 const purchaseStatuses = ["Cotizando", "Pedido", "Recibido", "Cancelado"];
 const categories = [
@@ -76,6 +77,7 @@ let currentSelectedParts = [];
 let currentAdminReport = null;
 let currentPortalOrder = null;
 let currentPortalClient = null;
+let lastDatabaseLoadAt = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -85,12 +87,17 @@ document.addEventListener("DOMContentLoaded", () => {
     showLoginAlert(`Error inicializando sistema: ${error.message}`, "error");
   });
 });
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  showAlert(event.reason?.message || "No se pudo completar la operacion.", "error");
+});
 
 async function boot() {
   hydrateLogin();
   wireLoginEvents();
   fillStaticOptions();
   wireEvents();
+  startLiveRefresh();
   clearBrowserResidue().catch(() => {});
   showLoginAlert(`Frontend ${PCFIX_FRONTEND_VERSION}`, "ok");
   if (isPublicPortalRequest()) {
@@ -193,13 +200,13 @@ function wireEvents() {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
 
-  $("clientForm").addEventListener("submit", saveClient);
-  $("supplierForm").addEventListener("submit", saveSupplier);
-  $("inventoryForm").addEventListener("submit", saveInventory);
-  $("orderForm").addEventListener("submit", saveOrder);
-  $("purchaseForm").addEventListener("submit", savePurchase);
-  $("paymentForm").addEventListener("submit", savePayment);
-  $("settingsForm").addEventListener("submit", saveSettings);
+  $("clientForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveClient(event)); });
+  $("supplierForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveSupplier(event)); });
+  $("inventoryForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveInventory(event)); });
+  $("orderForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveOrder(event)); });
+  $("purchaseForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => savePurchase(event)); });
+  $("paymentForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => savePayment(event)); });
+  $("settingsForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveSettings(event)); });
   $("portalForm").addEventListener("submit", searchPortal);
   $("itemCost").addEventListener("input", () => $("itemSubdealer").value = calculateSubdealer($("itemCost").value).toFixed(2));
   $("orderDevice").addEventListener("input", updateOrderSuggestions);
@@ -218,8 +225,8 @@ function wireEvents() {
     const order = $("orderId").value ? state.orders.find((item) => item.id === $("orderId").value) : null;
     printOrderDocument(order || draftOrderFromForm());
   });
-  $("appointmentForm").addEventListener("submit", saveAppointment);
-  $("warrantyForm").addEventListener("submit", saveWarranty);
+  $("appointmentForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveAppointment(event)); });
+  $("warrantyForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveWarranty(event)); });
   $("loadAdminReportBtn").addEventListener("click", loadAdminReports);
   $("themeBlue").addEventListener("input", applyThemeFromInputs);
   $("themeCyan").addEventListener("input", applyThemeFromInputs);
@@ -228,6 +235,31 @@ function wireEvents() {
   renderPatternGrid();
   renderPurchaseItems([]);
   renderSelectedParts();
+}
+
+async function runAction(action) {
+  if (busy) return;
+  try {
+    setBusy(true);
+    return await action();
+  } catch (error) {
+    if (error.code === "stale_record") await loadStateFromDb();
+    showAlert(error.message || "No se pudo completar la operacion.", "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function startLiveRefresh() {
+  const refreshWhenSafe = () => {
+    if (!session.token || busy || document.hidden) return;
+    if (document.querySelector("form:focus-within") || !$("orderForm").classList.contains("hidden")) return;
+    if (Date.now() - lastDatabaseLoadAt < 30000) return;
+    loadStateFromDb();
+  };
+  window.addEventListener("focus", refreshWhenSafe);
+  document.addEventListener("visibilitychange", refreshWhenSafe);
+  window.setInterval(refreshWhenSafe, 45000);
 }
 
 async function login(event) {
@@ -285,7 +317,12 @@ async function api(path, options = {}) {
     }
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || payload.message || "Error de backend");
+  if (!response.ok) {
+    const error = new Error(payload.error || payload.message || "Error de backend");
+    error.code = payload.code || "api_error";
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -299,6 +336,7 @@ async function loadStateFromDb(manual = false) {
       ...data,
       settings: { ...clone(defaultState.settings), ...(data.settings || {}) }
     };
+    lastDatabaseLoadAt = Date.now();
     render();
     $("connectionLabel").textContent = `BD actualizada ${new Date().toLocaleTimeString("es-MX")}`;
     if (manual) showAlert("Datos cargados desde BD.", "ok");
@@ -307,6 +345,7 @@ async function loadStateFromDb(manual = false) {
     state = clone(defaultState);
     render();
     showAlert(`No se pudo leer BD: ${error.message}`, "error");
+    if (error.status === 401) logout();
     return false;
   } finally {
     setBusy(false);
@@ -314,9 +353,15 @@ async function loadStateFromDb(manual = false) {
 }
 
 async function saveRecord(type, data) {
+  const collectionMap = {
+    client: state.clients, supplier: state.suppliers, inventory: state.inventory, order: state.orders,
+    purchase: state.purchases, payment: state.payments, appointment: state.appointments,
+    warrantyClaim: state.warrantyClaims, settings: [state.settings]
+  };
+  const existing = (collectionMap[type] || []).find((row) => row?.id === data.id);
   const payload = await api(`/api/records/${type}`, {
     method: "POST",
-    body: JSON.stringify({ id: data.id, data, detail: "Guardado directo BD" })
+    body: JSON.stringify({ id: data.id, data, expectedUpdatedAt: existing?.updatedAt || "", detail: "Guardado directo BD" })
   });
   await loadStateFromDb();
   return payload.data || payload;
@@ -371,31 +416,49 @@ function renderDashboard() {
   const inventory = active(state.inventory);
   const purchases = active(state.purchases);
   const activeOrders = orders.filter((o) => !["Entregado", "Cancelado"].includes(o.status));
+  const billableOrders = orders.filter((o) => o.status !== "Cancelado");
+  const deliveredOrders = orders.filter((o) => o.status === "Entregado");
   const lowStock = inventory.filter((i) => Number(i.stock || 0) <= Number(i.min || i.minStock || 1));
-  const revenue = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
-  const cost = orders.reduce((sum, order) => sum + getOrderPartsCost(order), 0);
-  const receivables = orders.reduce((sum, o) => sum + getBalance(o), 0);
-  const margin = revenue ? Math.max(0, Math.round(((revenue - cost) / revenue) * 100)) : 0;
+  const overdueOrders = activeOrders.filter(isOrderOverdue);
+  const revenue = billableOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const warrantyCost = active(state.warrantyClaims).reduce((sum, claim) => sum + Number(claim.cost || 0), 0);
+  const cost = billableOrders.reduce((sum, order) => sum + getOrderInternalCost(order), 0) + warrantyCost;
+  const receivables = billableOrders.reduce((sum, o) => sum + getBalance(o), 0);
+  const margin = revenue ? Math.round(((revenue - cost) / revenue) * 100) : 0;
+  const cycleDays = averageCycleDays(deliveredOrders);
   $("metricClients").textContent = active(state.clients).length;
   $("metricOrders").textContent = activeOrders.length;
   $("metricPurchases").textContent = purchases.length;
   $("metricLowStock").textContent = lowStock.length;
   $("metricRevenue").textContent = money.format(revenue);
   $("metricMargin").textContent = `${margin}%`;
+  $("metricOverdue").textContent = overdueOrders.length;
+  $("metricCycle").textContent = `${cycleDays.toFixed(1)} dias`;
   $("recentOrders").innerHTML = orders.slice(0, 8).map(orderCard).join("") || empty("Sin ordenes en BD");
-  renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost });
+  renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost, overdueOrders });
   renderStatusChart(orders);
   renderStockRisk(lowStock);
   renderExecutiveCharts({ orders, purchases, revenue, cost, receivables });
 }
 
-function renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost }) {
+function renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost, overdueOrders }) {
   const pendingPurchases = purchases.filter((p) => !["Recibido", "Cancelado"].includes(p.status || ""));
   const readyOrders = activeOrders.filter((o) => o.status === "Listo");
   const waitingParts = activeOrders.filter((o) => normalize(o.status).includes("pieza"));
-  const margin = revenue ? Math.max(0, Math.round(((revenue - cost) / revenue) * 100)) : 0;
+  const pendingApproval = activeOrders.filter((order) => (order.approvalStatus || "Pendiente") === "Pendiente");
+  const margin = revenue ? Math.round(((revenue - cost) / revenue) * 100) : 0;
   $("decisionScore").textContent = `${margin}%`;
   const insights = [
+    {
+      level: overdueOrders.length ? "danger" : "ok",
+      title: `${overdueOrders.length} ordenes fuera de promesa`,
+      text: overdueOrders.length ? "Reasigna prioridad o comunica una nueva fecha al cliente." : "Las fechas prometidas estan bajo control."
+    },
+    {
+      level: pendingApproval.length ? "warn" : "ok",
+      title: `${pendingApproval.length} presupuestos sin autorizar`,
+      text: pendingApproval.length ? "Obtener autorizacion evita trabajo detenido y cobros disputados." : "No hay autorizaciones pendientes."
+    },
     {
       level: readyOrders.length ? "ok" : "neutral",
       title: `${readyOrders.length} equipos listos para entrega`,
@@ -529,11 +592,11 @@ function renderSuppliers() {
 }
 
 function renderInventory() {
-  const rows = active(state.inventory).filter((i) => matches([i.brand, i.model, i.name, i.category]));
+  const rows = active(state.inventory).filter((i) => matches([i.sku, i.location, i.brand, i.model, i.name, i.category]));
   $("inventoryCount").textContent = rows.length;
   $("inventoryList").innerHTML = rows.map((i) => card(`
     <strong>${escapeHtml(displayItem(i))}</strong><span>${escapeHtml(i.category || "")}</span>
-    <small>Stock ${Number(i.stock || 0)} | Min ${Number(i.min || i.minStock || 1)} | Costo ${money.format(Number(i.cost || 0))} | Sub ${money.format(getSubdealer(i))}</small>
+    <small>${i.sku ? `SKU ${escapeHtml(i.sku)} | ` : ""}${i.location ? `Ubicacion ${escapeHtml(i.location)} | ` : ""}Stock ${Number(i.stock || 0)} | Min ${Number(i.min || i.minStock || 1)} | Costo ${money.format(Number(i.cost || 0))} | Sub ${money.format(getSubdealer(i))}</small>
     <div class="record-actions">
       <button onclick="editInventory('${i.id}')" class="btn ghost">Editar</button>
       <button onclick="removeRecord('inventory','${i.id}')" class="btn danger">Archivar</button>
@@ -542,8 +605,8 @@ function renderInventory() {
 
 function renderOrders() {
   const rows = active(state.orders).filter((o) => matches([o.folio, o.device, o.status, getClient(o.clientId)?.name]));
-  const activeRows = rows.filter((o) => o.status !== "Entregado");
-  const finishedRows = rows.filter((o) => o.status === "Entregado");
+  const activeRows = rows.filter((o) => !["Entregado", "Cancelado"].includes(o.status));
+  const finishedRows = rows.filter((o) => ["Entregado", "Cancelado"].includes(o.status));
   $("activeOrderCount").textContent = activeRows.length;
   $("finishedOrderCount").textContent = finishedRows.length;
   $("activeOrderList").innerHTML = activeRows.map(orderCard).join("") || empty("Sin ordenes activas en BD");
@@ -555,15 +618,19 @@ function orderCard(o) {
   const evidenceCount = (o.statusEvidencePhotos || []).length;
   const parts = o.suppliedParts || [];
   const delivered = o.status === "Entregado";
+  const overdue = isOrderOverdue(o);
+  const promisedLabel = o.promisedAt ? formatDateTime(o.promisedAt) : "Sin fecha prometida";
+  const internalCost = getOrderInternalCost(o);
   return card(`
     <div class="order-card-head">
       <div>
         <strong>${escapeHtml(o.folio || o.id)} | ${escapeHtml(o.device || "")}</strong>
-        <span>${escapeHtml(client?.name || "Sin cliente")} | ${escapeHtml(o.status || "")}</span>
+        <span>${escapeHtml(client?.name || "Sin cliente")} | ${escapeHtml(o.priority || "Normal")} | ${escapeHtml(o.approvalStatus || "Pendiente")}</span>
       </div>
       <b class="status-badge ${statusClass(o.status)}">${escapeHtml(o.status || "Sin estatus")}</b>
     </div>
-    <small>Total ${money.format(Number(o.total || 0))} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount} | Refacciones ${parts.length}</small>
+    <div class="sla-line ${overdue ? "overdue" : ""}"><strong>${overdue ? "Promesa vencida" : "Entrega"}</strong><span>${escapeHtml(promisedLabel)}</span></div>
+    <small>Total ${money.format(Number(o.total || 0))} | Costo interno ${money.format(internalCost)} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount} | Refacciones ${parts.length}</small>
     ${parts.length ? `<div class="mini-chip-row">${parts.slice(0, 4).map((part) => `<span>${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}</span>`).join("")}</div>` : ""}
     <div class="status-inline">
       <span>Cambiar estatus</span>
@@ -698,6 +765,8 @@ async function saveInventory(event) {
   const cost = Number($("itemCost").value || 0);
   await saveRecord("inventory", {
     id: $("itemId").value || id("inv"),
+    sku: $("itemSku").value.trim(),
+    location: $("itemLocation").value.trim(),
     brand: $("itemBrand").value.trim(),
     model: $("itemModel").value.trim(),
     name: [$("itemBrand").value.trim(), $("itemModel").value.trim()].filter(Boolean).join(" "),
@@ -717,6 +786,19 @@ async function saveInventory(event) {
 async function saveOrder(event) {
   event.preventDefault();
   const existing = state.orders.find((o) => o.id === $("orderId").value);
+  if ($("orderApprovalStatus").value === "Aprobado" && !$("orderCustomerAuthorization").checked) {
+    throw new Error("Registra la autorizacion del cliente antes de marcar el presupuesto como aprobado.");
+  }
+  for (const selected of currentSelectedParts) {
+    const item = state.inventory.find((entry) => entry.id === selected.inventoryId);
+    const previouslyUsed = (existing?.suppliedParts || [])
+      .filter((part) => part.inventoryId === selected.inventoryId)
+      .reduce((sum, part) => sum + Number(part.qty || 0), 0);
+    const available = Number(item?.stock || 0) + previouslyUsed;
+    if (!item || Number(selected.qty || 1) > available) {
+      throw new Error(`Stock insuficiente para ${selected.part || "la refaccion seleccionada"}.`);
+    }
+  }
   const selectedParts = currentSelectedParts.map((part) => part.inventoryId);
   const suppliedParts = currentSelectedParts.map((part) => ({
     ...part,
@@ -737,7 +819,11 @@ async function saveOrder(event) {
     technician: $("orderTechnician").value.trim(),
     serial: $("orderSerial").value.trim(),
     status,
+    priority: $("orderPriority").value,
+    promisedAt: localInputToIso($("orderPromisedAt").value),
+    approvalStatus: $("orderApprovalStatus").value,
     total,
+    laborCost: Number($("orderLaborCost").value || 0),
     deposit,
     paid: deposit >= total,
     issue: $("orderIssue").value.trim(),
@@ -747,10 +833,13 @@ async function saveOrder(event) {
     unlockPattern: $("orderPattern").value.trim(),
     patternSize: Number($("patternSize").value || 3),
     quotePartName: $("orderQuotePart").value.trim(),
+    replacedPartsDisposition: $("orderReplacedPartsDisposition").value,
+    customerAuthorization: $("orderCustomerAuthorization").checked,
     warrantyDays: Math.max(90, Number($("orderWarrantyDays").value || 90)),
     warrantyTerms: defaultWarrantyTerms(),
     trackingCode: existing?.trackingCode || randomCode(),
     statusHistory: updateHistory(existing, status),
+    completedAt: status === "Entregado" ? (existing?.completedAt || now()) : "",
     statusEvidencePhotos: currentEvidencePhotos,
     parts: selectedParts,
     suppliedParts,
@@ -788,6 +877,10 @@ async function savePurchase(event) {
 }
 
 async function receivePurchase(purchaseId) {
+  return runAction(() => receivePurchaseDirect(purchaseId));
+}
+
+async function receivePurchaseDirect(purchaseId) {
   const purchase = state.purchases.find((p) => p.id === purchaseId);
   if (!purchase) return;
   const updated = { ...purchase, status: "Recibido", receivedAt: purchase.receivedAt || now(), updatedAt: now() };
@@ -833,20 +926,16 @@ async function saveWarranty(event) {
 async function savePayment(event) {
   event.preventDefault();
   const amount = Number($("paymentAmount").value || 0);
-  const order = state.orders.find((o) => o.id === $("paymentOrder").value);
-  await saveRecord("payment", {
-    id: id("pay"),
-    orderId: $("paymentOrder").value,
+  const orderId = $("paymentOrder").value;
+  await api(`/api/orders/${encodeURIComponent(orderId)}/payments`, {
+    method: "POST",
+    body: JSON.stringify({
     amount,
     method: $("paymentMethod").value,
-    reference: $("paymentReference").value.trim(),
-    createdAt: now(),
-    updatedAt: now()
+      reference: $("paymentReference").value.trim()
+    })
   });
-  if (order) {
-    const paid = getPaid(order) + amount;
-    await saveRecord("order", { ...order, deposit: paid, paid: paid >= Number(order.total || 0), updatedAt: now() });
-  }
+  await loadStateFromDb();
   resetForm("payment");
   showAlert("Pago guardado en BD.", "ok");
 }
@@ -877,6 +966,10 @@ async function quickStatus(orderId) {
 }
 
 async function changeOrderStatus(orderId, next) {
+  return runAction(() => changeOrderStatusDirect(orderId, next));
+}
+
+async function changeOrderStatusDirect(orderId, next) {
   const order = state.orders.find((o) => o.id === orderId);
   if (!order || !next || next === order.status) return;
   const updated = {
@@ -884,6 +977,7 @@ async function changeOrderStatus(orderId, next) {
     status: next,
     deposit: next === "Entregado" ? Number(order.total || 0) : order.deposit,
     paid: next === "Entregado" ? true : order.paid,
+    completedAt: next === "Entregado" ? (order.completedAt || now()) : "",
     statusHistory: updateHistory(order, next),
     updatedAt: now()
   };
@@ -932,6 +1026,10 @@ function sendDeliveryWhatsApp(orderId) {
 }
 
 async function removeRecord(type, idValue) {
+  return runAction(() => removeRecordDirect(type, idValue));
+}
+
+async function removeRecordDirect(type, idValue) {
   if (!confirm("Archivar/eliminar este registro de la vista?")) return;
   await archiveRecord(type, idValue);
   showAlert("Registro actualizado en BD.", "ok");
@@ -965,6 +1063,8 @@ function editInventory(idValue) {
   const i = state.inventory.find((x) => x.id === idValue);
   if (!i) return;
   $("itemId").value = i.id;
+  $("itemSku").value = i.sku || "";
+  $("itemLocation").value = i.location || "";
   $("itemBrand").value = i.brand || "";
   $("itemModel").value = i.model || i.name || "";
   $("itemCategory").value = i.category || "";
@@ -1042,7 +1142,11 @@ function showOrderForm(order = null) {
   $("orderTechnician").value = order?.technician || "";
   $("orderSerial").value = order?.serial || "";
   $("orderStatus").value = order?.status || "Recibido";
+  $("orderPriority").value = order?.priority || "Normal";
+  $("orderPromisedAt").value = isoToLocalInput(order?.promisedAt || "");
+  $("orderApprovalStatus").value = order?.approvalStatus || "Pendiente";
   $("orderTotal").value = Number(order?.total || 0);
+  $("orderLaborCost").value = Number(order?.laborCost || 0);
   $("orderDeposit").value = Number(order?.deposit || 0);
   $("orderWarrantyDays").value = Math.max(90, Number(order?.warrantyDays || 90));
   $("orderIssue").value = order?.issue || "";
@@ -1051,6 +1155,8 @@ function showOrderForm(order = null) {
   $("orderPattern").value = order?.unlockPattern || "";
   $("patternSize").value = String(order?.patternSize || 3);
   $("orderQuotePart").value = order?.quotePartName || suggestPartFromDiagnosis(order?.issue || "", order?.device || "");
+  $("orderReplacedPartsDisposition").value = order?.replacedPartsDisposition || "Entregar al cliente";
+  $("orderCustomerAuthorization").checked = Boolean(order?.customerAuthorization);
   renderPatternGrid();
   renderEvidencePreview();
   renderOrderPartOptions();
@@ -1151,6 +1257,10 @@ function addSelectedOrderPart() {
   const item = state.inventory.find((entry) => entry.id === partId);
   if (!item || currentSelectedParts.some((part) => part.inventoryId === partId)) return;
   const qty = Math.max(1, Number($("orderPartQty").value || 1));
+  if (qty > Number(item.stock || 0)) {
+    showAlert(`Solo hay ${Number(item.stock || 0)} unidad(es) disponibles de ${displayItem(item)}.`, "error");
+    return;
+  }
   currentSelectedParts.push({
     id: id("sup"),
     inventoryId: partId,
@@ -1228,19 +1338,43 @@ function suggestPartFromDiagnosis(issue = "", device = "") {
 
 async function handleEvidenceFiles(event) {
   const files = Array.from(event.target.files || []).slice(0, 8);
+  if (files.some((file) => !file.type.startsWith("image/"))) throw new Error("Solo puedes adjuntar imagenes como evidencia.");
+  if (files.some((file) => file.size > 15 * 1024 * 1024)) throw new Error("Cada fotografia debe pesar menos de 15 MB.");
   const photos = await Promise.all(files.map(fileToPhoto));
-  currentEvidencePhotos = [...currentEvidencePhotos, ...photos].slice(0, 12);
+  currentEvidencePhotos = [...currentEvidencePhotos, ...photos].slice(0, 10);
   renderEvidencePreview();
   event.target.value = "";
 }
 
-function fileToPhoto(file) {
-  return new Promise((resolve, reject) => {
+async function fileToPhoto(file) {
+  const source = await new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve({ id: id("pho"), name: file.name, type: file.type, dataUrl: reader.result, at: now() });
+    reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+  const image = await new Promise((resolve, reject) => {
+    const element = new Image();
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error(`No se pudo procesar ${file.name}.`));
+    element.src = source;
+  });
+  const maxSide = 1600;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return {
+    id: id("pho"),
+    name: file.name,
+    type: "image/jpeg",
+    dataUrl: canvas.toDataURL("image/jpeg", 0.82),
+    width: canvas.width,
+    height: canvas.height,
+    at: now()
+  };
 }
 
 function renderEvidencePreview() {
@@ -1388,6 +1522,8 @@ function renderPortalOrder(order, client = {}) {
         <div class="portal-detail">
           <strong>Garantia</strong><span>${Number(order.warrantyDays || 90)} dias</span>
           <strong>Ultima actualizacion</strong><span>${escapeHtml(formatDate(order.updatedAt || order.updated_at || ""))}</span>
+          <strong>Entrega estimada</strong><span>${escapeHtml(order.promisedAt ? formatDateTime(order.promisedAt) : "Por confirmar")}</span>
+          <strong>Presupuesto</strong><span>${escapeHtml(order.approvalStatus || "Pendiente")}</span>
           <strong>Tecnico</strong><span>${escapeHtml(order.technician || "Equipo PCFix")}</span>
           <strong>Serie / IMEI</strong><span>${escapeHtml(order.serial || "No registrado")}</span>
           <strong>Total</strong><span>${money.format(Number(order.total || 0))}</span>
@@ -1450,6 +1586,8 @@ function renderAdminHealth() {
   const kpis = analytics.kpis || {};
   panel.innerHTML = `
     <article><strong>Integridad BD</strong><span>${integrity.ok ? "Sin alertas" : "Revisar incidencias"} | Duplicados: ${countDuplicateAlerts(stability.duplicates)}</span></article>
+    <article><strong>SLA operativo</strong><span>${kpis.overdue_orders || 0} vencidas | ciclo ${Number(kpis.average_cycle_days || 0).toFixed(1)} dias</span></article>
+    <article><strong>Costos internos</strong><span>Refacciones ${money.format(Number(kpis.partsCost || 0))} | mano de obra ${money.format(Number(kpis.laborCost || 0))}</span></article>
     <article><strong>Compras / inventario</strong><span>${kpis.pendingPurchases || 0} pendientes | ${money.format(Number(kpis.pendingPurchaseValue || 0))}</span></article>
     <article><strong>Cuentas por cobrar</strong><span>${money.format(Number(kpis.receivables || 0))}</span></article>
     <article><strong>Garantias</strong><span>${kpis.warrantyClaims || 0} abiertas | costo ${money.format(Number(kpis.warrantyCost || 0))}</span></article>
@@ -1473,7 +1611,11 @@ function draftOrderFromForm() {
     technician: $("orderTechnician").value.trim(),
     serial: $("orderSerial").value.trim(),
     status: $("orderStatus").value,
+    priority: $("orderPriority").value,
+    promisedAt: localInputToIso($("orderPromisedAt").value),
+    approvalStatus: $("orderApprovalStatus").value,
     total,
+    laborCost: Number($("orderLaborCost").value || 0),
     deposit: $("orderStatus").value === "Entregado" ? total : Number($("orderDeposit").value || 0),
     issue: $("orderIssue").value.trim(),
     notes: $("orderConditions").value.trim(),
@@ -1481,6 +1623,8 @@ function draftOrderFromForm() {
     accessories: $("orderAccessories").value.trim(),
     warrantyDays: Math.max(90, Number($("orderWarrantyDays").value || 90)),
     warrantyTerms: defaultWarrantyTerms(),
+    replacedPartsDisposition: $("orderReplacedPartsDisposition").value,
+    customerAuthorization: $("orderCustomerAuthorization").checked,
     suppliedParts: currentSelectedParts,
     statusEvidencePhotos: currentEvidencePhotos,
     updatedAt: now()
@@ -1543,7 +1687,7 @@ function printOrderDocument(order, options = {}) {
       <div class="brand-line"></div>
       <div class="content">
       <section class="grid">
-        <div class="box"><h2>Orden</h2><p><b>Equipo:</b> ${escapeHtml(order.device || "")}</p><p><b>Serie/IMEI:</b> ${escapeHtml(order.serial || "")}</p><p><b>Tecnico:</b> ${escapeHtml(order.technician || "")}</p></div>
+        <div class="box"><h2>Orden</h2><p><b>Equipo:</b> ${escapeHtml(order.device || "")}</p><p><b>Serie/IMEI:</b> ${escapeHtml(order.serial || "")}</p><p><b>Tecnico:</b> ${escapeHtml(order.technician || "")}</p><p><b>Entrega prometida:</b> ${escapeHtml(order.promisedAt ? formatDateTime(order.promisedAt) : "Por confirmar")}</p></div>
         <div class="box"><h2>Cliente</h2><p><b>Nombre:</b> ${escapeHtml(client.name || "")}</p><p><b>Telefono:</b> ${escapeHtml(client.phone || "")}</p><p><b>Correo:</b> ${escapeHtml(client.email || "")}</p></div>
       </section>
       <section class="box soft"><h2>Falla / diagnostico</h2><p>${escapeHtml(order.issue || "")}</p></section>
@@ -1552,6 +1696,7 @@ function printOrderDocument(order, options = {}) {
         <div class="box"><h2>Accesorios recibidos</h2><p>${escapeHtml(accessories)}</p></div>
       </section>
       <section class="box"><h2>Refacciones utilizadas</h2><table><thead>${partsHeader}</thead><tbody>${partsRows}</tbody></table></section>
+      <section class="box soft"><h2>Autorizacion y refacciones sustituidas</h2><p>Presupuesto: ${escapeHtml(order.approvalStatus || "Pendiente")} | Autorizacion registrada: ${order.customerAuthorization ? "Si" : "No"}</p><p>Destino de refacciones sustituidas: ${escapeHtml(order.replacedPartsDisposition || "Entregar al cliente")}</p></section>
       <section class="grid"><div class="box"><h2>Garantia</h2><p>${Number(order.warrantyDays || 90)} dias</p><p class="muted">${escapeHtml(order.warrantyTerms || defaultWarrantyTerms())}</p></div><div class="box"><h2>Importe</h2><p class="total">${money.format(Number(order.total || 0))}</p><p>Anticipo/pagado: ${money.format(getPaid(order))}</p><p>Saldo: ${money.format(getBalance(order))}</p></div></section>
       ${isDelivery ? `<section class="grid"><div><div class="signature"></div><p class="signature-label">${escapeHtml(technicianName)}</p></div><div><div class="signature"></div><p class="signature-label">${escapeHtml(clientName)}</p></div></section>` : ""}
       <footer>PCFix Comitan | La solucion a tus problemas | Documento generado desde informacion registrada en la base de datos.</footer>
@@ -1603,6 +1748,25 @@ function getOrderPartsCost(order) {
     const cost = Number(part.totalCost ?? part.total_cost ?? qty * Number(part.cost || 0));
     return sum + cost;
   }, 0);
+}
+
+function getOrderInternalCost(order) {
+  return getOrderPartsCost(order) + Number(order.laborCost || 0);
+}
+
+function isOrderOverdue(order) {
+  if (!order?.promisedAt || ["Entregado", "Cancelado"].includes(order.status)) return false;
+  const promised = new Date(order.promisedAt).getTime();
+  return Number.isFinite(promised) && promised < Date.now();
+}
+
+function averageCycleDays(orders) {
+  const durations = orders.map((order) => {
+    const start = new Date(order.createdAt || order.created_at || "").getTime();
+    const end = new Date(order.completedAt || order.updatedAt || order.updated_at || "").getTime();
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start ? (end - start) / 86400000 : null;
+  }).filter((value) => value !== null);
+  return durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0;
 }
 
 function nextOrderFolio() {
@@ -1670,6 +1834,20 @@ function now() {
   return new Date().toISOString();
 }
 
+function localInputToIso(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function isoToLocalInput(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
 function displayItem(item) {
   if (!item) return "";
   return item.name || [item.brand, item.model].filter(Boolean).join(" ") || item.model || "Articulo";
@@ -1718,13 +1896,19 @@ function purchaseMessage(purchase) {
 }
 
 function defaultWarrantyTerms() {
-  return "Garantia de 90 dias sobre la reparacion realizada y refacciones instaladas por PCFix. No cubre golpes, humedad, mal uso, software, virus, manipulacion de terceros ni fallas distintas a la diagnosticada.";
+  return "Garantia de 90 dias sobre la reparacion realizada y las refacciones instaladas por PCFix. El tiempo que el equipo permanezca en reparacion por una garantia procedente no se computa dentro de ese plazo. No cubre golpes, humedad, mal uso, software, virus, manipulacion de terceros ni fallas distintas a la diagnosticada.";
 }
 
 function formatDate(value) {
   if (!value) return "";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : dateFmt.format(date);
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : dateTimeFmt.format(date);
 }
 
 function escapeHtml(value) {

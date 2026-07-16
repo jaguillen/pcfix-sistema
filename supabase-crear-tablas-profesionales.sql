@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
 
 CREATE TABLE IF NOT EXISTS inventory_items (
   id TEXT PRIMARY KEY,
+  sku TEXT,
+  location TEXT,
   brand TEXT,
   model TEXT,
   name TEXT NOT NULL,
@@ -75,11 +77,15 @@ CREATE TABLE IF NOT EXISTS service_orders (
   technician TEXT,
   serial TEXT,
   status TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'Normal',
+  promised_at TEXT,
+  approval_status TEXT NOT NULL DEFAULT 'Pendiente',
   issue TEXT,
   notes TEXT,
   accessories TEXT,
   physical_state TEXT,
   total NUMERIC NOT NULL DEFAULT 0 CHECK (total >= 0),
+  labor_cost NUMERIC NOT NULL DEFAULT 0 CHECK (labor_cost >= 0),
   deposit NUMERIC NOT NULL DEFAULT 0 CHECK (deposit >= 0),
   paid BOOLEAN NOT NULL DEFAULT FALSE,
   warranty_days INTEGER NOT NULL DEFAULT 90 CHECK (warranty_days >= 0),
@@ -92,13 +98,28 @@ CREATE TABLE IF NOT EXISTS service_orders (
   status_evidence_photos JSONB NOT NULL DEFAULT '[]'::jsonb,
   raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TEXT NOT NULL DEFAULT now()::text,
-  updated_at TEXT NOT NULL DEFAULT now()::text
+  updated_at TEXT NOT NULL DEFAULT now()::text,
+  completed_at TEXT
 );
+
+ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS location TEXT;
+ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'Normal';
+ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS promised_at TEXT;
+ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'Pendiente';
+ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS labor_cost NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS completed_at TEXT;
+UPDATE service_orders SET completed_at = updated_at WHERE status = 'Entregado' AND COALESCE(completed_at, '') = '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_sku_active
+  ON inventory_items (lower(sku))
+  WHERE archived = FALSE AND COALESCE(sku, '') <> '';
 
 DROP INDEX IF EXISTS uq_service_orders_folio_active;
 DROP INDEX IF EXISTS uq_service_orders_tracking_active;
 CREATE INDEX IF NOT EXISTS idx_service_orders_client ON service_orders (client_id);
 CREATE INDEX IF NOT EXISTS idx_service_orders_status ON service_orders (status);
+CREATE INDEX IF NOT EXISTS idx_service_orders_promised ON service_orders (promised_at) WHERE archived = FALSE;
 
 CREATE TABLE IF NOT EXISTS order_parts (
   id TEXT PRIMARY KEY,
@@ -229,3 +250,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_service_orders_tracking_active
 CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_folio_active
   ON purchases (lower(folio))
   WHERE archived = FALSE;
+
+UPDATE service_orders SET client_id = NULL WHERE client_id = '';
+UPDATE purchases SET supplier_id = NULL WHERE supplier_id = '';
+UPDATE purchases SET order_id = NULL WHERE order_id = '';
+UPDATE payments SET order_id = NULL WHERE order_id = '';
+UPDATE warranty_claims SET order_id = NULL WHERE order_id = '';
+UPDATE inventory_movements SET item_id = NULL WHERE item_id = '';
+UPDATE service_orders o SET client_id = NULL WHERE client_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.id = o.client_id);
+UPDATE purchases p SET supplier_id = NULL WHERE supplier_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = p.supplier_id);
+UPDATE purchases p SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = p.order_id);
+UPDATE payments p SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = p.order_id);
+UPDATE warranty_claims w SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = w.order_id);
+UPDATE inventory_movements m SET item_id = NULL WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory_items i WHERE i.id = m.item_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_service_orders_client') THEN
+    ALTER TABLE service_orders ADD CONSTRAINT fk_service_orders_client FOREIGN KEY (client_id) REFERENCES clients(id) NOT VALID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchases_supplier') THEN
+    ALTER TABLE purchases ADD CONSTRAINT fk_purchases_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id) NOT VALID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchases_order') THEN
+    ALTER TABLE purchases ADD CONSTRAINT fk_purchases_order FOREIGN KEY (order_id) REFERENCES service_orders(id) NOT VALID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payments_order') THEN
+    ALTER TABLE payments ADD CONSTRAINT fk_payments_order FOREIGN KEY (order_id) REFERENCES service_orders(id) NOT VALID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_warranties_order') THEN
+    ALTER TABLE warranty_claims ADD CONSTRAINT fk_warranties_order FOREIGN KEY (order_id) REFERENCES service_orders(id) NOT VALID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_movements_item') THEN
+    ALTER TABLE inventory_movements ADD CONSTRAINT fk_movements_item FOREIGN KEY (item_id) REFERENCES inventory_items(id) NOT VALID;
+  END IF;
+END $$;

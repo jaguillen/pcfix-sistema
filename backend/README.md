@@ -29,6 +29,7 @@ El backend crea las tablas profesionales al iniciar y elimina tablas heredadas `
 - `GET /api/records/:type`
 - `POST /api/records/:type`
 - `POST /api/records/:type/:id/archive`
+- `POST /api/orders/:id/payments`
 - `GET /api/public/orders/:folio`
 - `GET /api/stability`
 - `GET /api/admin/stability`
@@ -42,7 +43,10 @@ Tipos permitidos:
 ## Reglas de consistencia
 
 - Clientes, proveedores, ordenes, inventario, compras, pagos y configuracion se leen desde BD.
-- Al guardar una compra como `Recibido`, el backend suma inventario y crea movimiento de forma idempotente.
-- El movimiento `mov_purchase_<id>` evita duplicar stock si se vuelve a guardar la misma compra.
+- Al guardar una compra como `Recibido`, el backend suma inventario y crea movimientos por producto.
+- Editar o archivar una compra recibida revierte y recalcula sus efectos dentro de una transaccion.
+- Las ordenes bloquean las filas de inventario y rechazan consumos sin existencia suficiente.
+- Los pagos actualizan el saldo de la orden en la misma transaccion.
+- La API devuelve datos desde las columnas normalizadas y usa `raw_data` solo para extensiones.
 - El portal cliente consulta directo a BD por folio con `/api/public/orders/:folio`.
 - Todas las respuestas `/api` se entregan con `Cache-Control: no-store`.

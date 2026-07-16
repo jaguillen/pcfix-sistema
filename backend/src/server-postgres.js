@@ -5,17 +5,22 @@ import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Pool } from "pg";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT || 8080);
-const jwtSecret = process.env.JWT_SECRET || "dev-secret-change-me";
+const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-bd-directa-20260715-08";
+const backendVersion = "pcfix-backend-premium-operativo-20260716-01";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
+  process.exit(1);
+}
+if (!jwtSecret || jwtSecret.length < 32) {
+  console.error("Falta JWT_SECRET o es demasiado corto. Configura al menos 32 caracteres en Render.");
   process.exit(1);
 }
 
@@ -23,6 +28,7 @@ const pool = new Pool({
   connectionString: databaseUrl,
   ssl: process.env.PGSSL === "false" ? false : { rejectUnauthorized: false }
 });
+const transactionContext = new AsyncLocalStorage();
 
 const allowedTypes = new Set([
   "settings",
@@ -90,8 +96,32 @@ function normalizeRecord(row) {
 }
 
 async function query(text, params = []) {
-  const result = await pool.query(text, params);
+  const connection = transactionContext.getStore() || pool;
+  const result = await connection.query(text, params);
   return result;
+}
+
+async function withTransaction(work) {
+  if (transactionContext.getStore()) return work();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await transactionContext.run(client, work);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function businessError(message, code = "business_rule", status = 409) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
 }
 
 async function initDb() {
@@ -130,9 +160,12 @@ async function initDb() {
   await runStabilityMigration();
 
   const adminEmail = (process.env.ADMIN_EMAIL || "admin@pcfix.local").toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD || "Cambiar123!";
+  const adminPassword = process.env.ADMIN_PASSWORD;
   const existing = await query("SELECT id FROM users WHERE email = $1", [adminEmail]);
   if (!existing.rows.length) {
+    if (!adminPassword || adminPassword.length < 12) {
+      throw new Error("ADMIN_PASSWORD debe configurarse con al menos 12 caracteres antes de crear el usuario inicial.");
+    }
     await query(
       "INSERT INTO users (id,name,email,password_hash,role,active,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
       [id("usr"), "Administrador PCFix", adminEmail, await bcrypt.hash(adminPassword, 12), "admin", true, now()]
@@ -143,9 +176,54 @@ async function initDb() {
 
 async function runStabilityMigration() {
   await createProfessionalSchema();
+  await createProfessionalForeignKeys();
   await dropLegacyOfflineTables();
   await repairProfessionalDuplicateBusinessKeys();
   await createProfessionalConstraints();
+}
+
+async function createProfessionalForeignKeys() {
+  await query(`
+    UPDATE service_orders SET client_id = NULL WHERE client_id = '';
+    UPDATE service_orders SET quote_supplier_id = NULL WHERE quote_supplier_id = '';
+    UPDATE purchases SET supplier_id = NULL WHERE supplier_id = '';
+    UPDATE purchases SET order_id = NULL WHERE order_id = '';
+    UPDATE payments SET order_id = NULL WHERE order_id = '';
+    UPDATE appointments SET client_id = NULL WHERE client_id = '';
+    UPDATE appointments SET order_id = NULL WHERE order_id = '';
+    UPDATE warranty_claims SET order_id = NULL WHERE order_id = '';
+    UPDATE inventory_movements SET item_id = NULL WHERE item_id = '';
+    UPDATE order_parts SET inventory_id = NULL WHERE inventory_id = '';
+    UPDATE order_parts SET purchase_id = NULL WHERE purchase_id = '';
+    UPDATE order_parts SET purchase_item_id = NULL WHERE purchase_item_id = '';
+    UPDATE service_orders o SET client_id = NULL WHERE client_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.id = o.client_id);
+    UPDATE purchases p SET supplier_id = NULL WHERE supplier_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = p.supplier_id);
+    UPDATE purchases p SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = p.order_id);
+    UPDATE payments p SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = p.order_id);
+    UPDATE warranty_claims w SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = w.order_id);
+    UPDATE inventory_movements m SET item_id = NULL WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory_items i WHERE i.id = m.item_id);
+
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_service_orders_client') THEN
+        ALTER TABLE service_orders ADD CONSTRAINT fk_service_orders_client FOREIGN KEY (client_id) REFERENCES clients(id) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchases_supplier') THEN
+        ALTER TABLE purchases ADD CONSTRAINT fk_purchases_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchases_order') THEN
+        ALTER TABLE purchases ADD CONSTRAINT fk_purchases_order FOREIGN KEY (order_id) REFERENCES service_orders(id) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payments_order') THEN
+        ALTER TABLE payments ADD CONSTRAINT fk_payments_order FOREIGN KEY (order_id) REFERENCES service_orders(id) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_warranties_order') THEN
+        ALTER TABLE warranty_claims ADD CONSTRAINT fk_warranties_order FOREIGN KEY (order_id) REFERENCES service_orders(id) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_movements_item') THEN
+        ALTER TABLE inventory_movements ADD CONSTRAINT fk_movements_item FOREIGN KEY (item_id) REFERENCES inventory_items(id) NOT VALID;
+      END IF;
+    END $$;
+  `);
 }
 
 async function dropLegacyOfflineTables() {
@@ -201,6 +279,8 @@ async function createProfessionalSchema() {
 
     CREATE TABLE IF NOT EXISTS inventory_items (
       id TEXT PRIMARY KEY,
+      sku TEXT,
+      location TEXT,
       brand TEXT,
       model TEXT,
       name TEXT NOT NULL,
@@ -228,11 +308,15 @@ async function createProfessionalSchema() {
       technician TEXT,
       serial TEXT,
       status TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'Normal',
+      promised_at TEXT,
+      approval_status TEXT NOT NULL DEFAULT 'Pendiente',
       issue TEXT,
       notes TEXT,
       accessories TEXT,
       physical_state TEXT,
       total NUMERIC NOT NULL DEFAULT 0 CHECK (total >= 0),
+      labor_cost NUMERIC NOT NULL DEFAULT 0 CHECK (labor_cost >= 0),
       deposit NUMERIC NOT NULL DEFAULT 0 CHECK (deposit >= 0),
       paid BOOLEAN NOT NULL DEFAULT FALSE,
       warranty_days INTEGER NOT NULL DEFAULT 90 CHECK (warranty_days >= 0),
@@ -245,14 +329,29 @@ async function createProfessionalSchema() {
       status_evidence_photos JSONB NOT NULL DEFAULT '[]'::jsonb,
       raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
     );
+
+    ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS sku TEXT;
+    ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS location TEXT;
+    ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'Normal';
+    ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS promised_at TEXT;
+    ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'Pendiente';
+    ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS labor_cost NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE service_orders ADD COLUMN IF NOT EXISTS completed_at TEXT;
+    UPDATE service_orders SET completed_at = updated_at WHERE status = 'Entregado' AND COALESCE(completed_at, '') = '';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_sku_active
+      ON inventory_items (lower(sku))
+      WHERE archived = FALSE AND COALESCE(sku, '') <> '';
 
     DROP INDEX IF EXISTS uq_service_orders_folio_active;
     DROP INDEX IF EXISTS uq_service_orders_tracking_active;
 
     CREATE INDEX IF NOT EXISTS idx_service_orders_client ON service_orders (client_id);
     CREATE INDEX IF NOT EXISTS idx_service_orders_status ON service_orders (status);
+    CREATE INDEX IF NOT EXISTS idx_service_orders_promised ON service_orders (promised_at) WHERE archived = FALSE;
 
     CREATE TABLE IF NOT EXISTS order_parts (
       id TEXT PRIMARY KEY,
@@ -476,15 +575,17 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
   }
   if (type === "inventory") {
     await query(
-      `INSERT INTO inventory_items (id,brand,model,name,category,stock,min_stock,cost,subdealer_price,price,archived,raw_data,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      `INSERT INTO inventory_items (id,sku,location,brand,model,name,category,stock,min_stock,cost,subdealer_price,price,archived,raw_data,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (id) DO UPDATE SET
-        brand = EXCLUDED.brand, model = EXCLUDED.model, name = EXCLUDED.name, category = EXCLUDED.category,
+        sku = EXCLUDED.sku, location = EXCLUDED.location, brand = EXCLUDED.brand, model = EXCLUDED.model,
+        name = EXCLUDED.name, category = EXCLUDED.category,
         stock = EXCLUDED.stock, min_stock = EXCLUDED.min_stock, cost = EXCLUDED.cost,
         subdealer_price = EXCLUDED.subdealer_price, price = EXCLUDED.price, archived = EXCLUDED.archived,
         raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
       [
-        data.id, data.brand || "", data.model || "", data.name || [data.brand, data.model].filter(Boolean).join(" ") || "Articulo",
+        data.id, data.sku || "", data.location || "", data.brand || "", data.model || "",
+        data.name || [data.brand, data.model].filter(Boolean).join(" ") || "Articulo",
         data.category || "", Math.max(0, asNumber(data.stock)), Math.max(0, asNumber(data.min ?? data.minStock ?? 1)),
         Math.max(0, asNumber(data.cost)), Math.max(0, asNumber(data.subdealerPrice)), Math.max(0, asNumber(data.price)),
         Boolean(archived || data.archived), JSON.stringify(data), created, updated
@@ -494,23 +595,29 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
   }
   if (type === "order") {
     await query(
-      `INSERT INTO service_orders (id,folio,tracking_code,client_id,device,technician,serial,status,issue,notes,accessories,physical_state,total,deposit,paid,warranty_days,warranty_terms,approved,quote_part_name,quote_supplier_id,archived,status_history,status_evidence_photos,raw_data,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+      `INSERT INTO service_orders (id,folio,tracking_code,client_id,device,technician,serial,status,priority,promised_at,approval_status,issue,notes,accessories,physical_state,total,labor_cost,deposit,paid,warranty_days,warranty_terms,approved,quote_part_name,quote_supplier_id,archived,status_history,status_evidence_photos,raw_data,created_at,updated_at,completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
        ON CONFLICT (id) DO UPDATE SET
         folio = EXCLUDED.folio, tracking_code = EXCLUDED.tracking_code, client_id = EXCLUDED.client_id,
         device = EXCLUDED.device, technician = EXCLUDED.technician, serial = EXCLUDED.serial, status = EXCLUDED.status,
+        priority = EXCLUDED.priority, promised_at = EXCLUDED.promised_at, approval_status = EXCLUDED.approval_status,
         issue = EXCLUDED.issue, notes = EXCLUDED.notes, accessories = EXCLUDED.accessories, physical_state = EXCLUDED.physical_state,
-        total = EXCLUDED.total, deposit = EXCLUDED.deposit, paid = EXCLUDED.paid, warranty_days = EXCLUDED.warranty_days,
+        total = EXCLUDED.total, labor_cost = EXCLUDED.labor_cost, deposit = EXCLUDED.deposit, paid = EXCLUDED.paid,
+        warranty_days = EXCLUDED.warranty_days,
         warranty_terms = EXCLUDED.warranty_terms, approved = EXCLUDED.approved, quote_part_name = EXCLUDED.quote_part_name,
         quote_supplier_id = EXCLUDED.quote_supplier_id, archived = EXCLUDED.archived, status_history = EXCLUDED.status_history,
-        status_evidence_photos = EXCLUDED.status_evidence_photos, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
+        status_evidence_photos = EXCLUDED.status_evidence_photos, raw_data = EXCLUDED.raw_data,
+        updated_at = EXCLUDED.updated_at, completed_at = EXCLUDED.completed_at`,
       [
-        data.id, data.folio || data.id, data.trackingCode || "", data.clientId || "", data.device || "Equipo",
-        data.technician || "", data.serial || "", data.status || "Recibido", data.issue || "", data.notes || "",
-        data.accessories || "", data.physicalState || "", Math.max(0, asNumber(data.total)), Math.max(0, asNumber(data.deposit)),
-        Boolean(data.paid), Math.max(0, Number(data.warrantyDays || 90)), data.warrantyTerms || "", Boolean(data.approved),
-        data.quotePartName || "", data.quoteSupplierId || "", Boolean(archived || data.archived), asJson(data.statusHistory),
-        asJson(data.statusEvidencePhotos), JSON.stringify(data), created, updated
+        data.id, data.folio || data.id, data.trackingCode || "", data.clientId || null, data.device || "Equipo",
+        data.technician || "", data.serial || "", data.status || "Recibido", data.priority || "Normal",
+        data.promisedAt || "", data.approvalStatus || "Pendiente", data.issue || "", data.notes || "",
+        data.accessories || "", data.physicalState || "", Math.max(0, asNumber(data.total)),
+        Math.max(0, asNumber(data.laborCost)), Math.max(0, asNumber(data.deposit)), Boolean(data.paid),
+        Math.max(0, Number(data.warrantyDays || 90)), data.warrantyTerms || "", Boolean(data.approved || data.approvalStatus === "Aprobado"),
+        data.quotePartName || "", data.quoteSupplierId || null, Boolean(archived || data.archived), asJson(data.statusHistory),
+        asJson(data.statusEvidencePhotos), JSON.stringify(data), created, updated,
+        data.completedAt || (data.status === "Entregado" ? updated : "")
       ]
     );
     await query("DELETE FROM order_parts WHERE order_id = $1", [data.id]);
@@ -524,7 +631,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
           part_name = EXCLUDED.part_name, qty = EXCLUDED.qty, cost = EXCLUDED.cost, total_cost = EXCLUDED.total_cost,
           raw_data = EXCLUDED.raw_data`,
         [
-          part.id || id("op"), data.id, part.inventoryId || "", part.purchaseId || "", part.purchaseItemId || "",
+          part.id || id("op"), data.id, part.inventoryId || null, part.purchaseId || null, part.purchaseItemId || null,
           part.part || "Refaccion", Math.max(0.01, asNumber(part.qty || 1)), Math.max(0, asNumber(part.cost)),
           Math.max(0, asNumber(part.totalCost ?? asNumber(part.qty || 1) * asNumber(part.cost))), JSON.stringify(part),
           part.createdAt || updated
@@ -535,6 +642,10 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
     return;
   }
   if (type === "purchase") {
+    const previousPurchase = await query("SELECT status FROM purchases WHERE id = $1 FOR UPDATE", [data.id]);
+    if (normalizeSearchKey(previousPurchase.rows[0]?.status) === "recibido") {
+      await revertReceivedPurchaseEffects(data.id, updated);
+    }
     await query(
       `INSERT INTO purchases (id,folio,supplier_id,order_id,part,qty,cost,status,notes,received_at,received_quantities,archived,raw_data,created_at,updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
@@ -544,7 +655,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
         received_at = EXCLUDED.received_at, received_quantities = EXCLUDED.received_quantities,
         archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
       [
-        data.id, data.folio || data.id, data.supplierId || "", data.orderId || "", data.part || "",
+        data.id, data.folio || data.id, data.supplierId || null, data.orderId || null, data.part || "",
         Math.max(0, asNumber(data.qty || 1)), Math.max(0, asNumber(data.cost)), data.status || "Cotizando",
         data.notes || "", data.receivedAt || "", asJson(data.receivedQuantities, {}), Boolean(archived || data.archived),
         JSON.stringify(data), created, updated
@@ -572,7 +683,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
        ON CONFLICT (id) DO UPDATE SET
         order_id = EXCLUDED.order_id, amount = EXCLUDED.amount, method = EXCLUDED.method, reference = EXCLUDED.reference,
         archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
-      [data.id, data.orderId || "", Math.max(0, asNumber(data.amount)), data.method || "", data.reference || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+      [data.id, data.orderId || null, Math.max(0, asNumber(data.amount)), data.method || "", data.reference || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
     );
     return;
   }
@@ -584,7 +695,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
         client_id = EXCLUDED.client_id, order_id = EXCLUDED.order_id, date = EXCLUDED.date, time = EXCLUDED.time,
         type = EXCLUDED.type, notes = EXCLUDED.notes, archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data,
         updated_at = EXCLUDED.updated_at`,
-      [data.id, data.clientId || "", data.orderId || "", data.date || "", data.time || "", data.type || "", data.notes || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+      [data.id, data.clientId || null, data.orderId || null, data.date || "", data.time || "", data.type || "", data.notes || "", Boolean(archived || data.archived), JSON.stringify(data), created, updated]
     );
     return;
   }
@@ -595,7 +706,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
        ON CONFLICT (id) DO UPDATE SET
         order_id = EXCLUDED.order_id, reason = EXCLUDED.reason, resolution = EXCLUDED.resolution, status = EXCLUDED.status,
         cost = EXCLUDED.cost, archived = EXCLUDED.archived, raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at`,
-      [data.id, data.orderId || "", data.reason || "", data.resolution || "", data.status || "", Math.max(0, asNumber(data.cost)), Boolean(archived || data.archived), JSON.stringify(data), created, updated]
+      [data.id, data.orderId || null, data.reason || "", data.resolution || "", data.status || "", Math.max(0, asNumber(data.cost)), Boolean(archived || data.archived), JSON.stringify(data), created, updated]
     );
     return;
   }
@@ -606,7 +717,7 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
        ON CONFLICT (id) DO UPDATE SET
         item_id = EXCLUDED.item_id, item_name = EXCLUDED.item_name, qty = EXCLUDED.qty, type = EXCLUDED.type,
         detail = EXCLUDED.detail, ref_id = EXCLUDED.ref_id, raw_data = EXCLUDED.raw_data`,
-      [data.id, data.itemId || "", data.itemName || "", asNumber(data.qty), data.type || "", data.detail || "", data.refId || "", JSON.stringify(data), created]
+      [data.id, data.itemId || null, data.itemName || "", asNumber(data.qty), data.type || "", data.detail || "", data.refId || "", JSON.stringify(data), created]
     );
     return;
   }
@@ -621,8 +732,6 @@ async function syncNormalizedRecord(type, data, archived = false, createdAt = no
 }
 
 async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
-  const legacyMovement = await query("SELECT id FROM inventory_movements WHERE id = $1 LIMIT 1", [`mov_purchase_${purchase.id}`]);
-  if (legacyMovement.rows.length) return;
   const items = Array.isArray(purchase.items) && purchase.items.length
     ? purchase.items
     : [{ id: "item", part: purchase.part || "Refaccion", qty: purchase.qty || 1, cost: purchase.cost || 0 }];
@@ -717,6 +826,53 @@ async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
   }
 }
 
+async function revertReceivedPurchaseEffects(purchaseId, timestamp = now()) {
+  const affectedOrders = await query(
+    `SELECT DISTINCT o.*
+     FROM service_orders o
+     JOIN order_parts op ON op.order_id = o.id
+     WHERE op.purchase_id = $1 AND o.archived = FALSE
+     FOR UPDATE OF o`,
+    [purchaseId]
+  );
+  for (const row of affectedOrders.rows) {
+    const parts = await query("SELECT * FROM order_parts WHERE order_id = $1 ORDER BY created_at ASC", [row.id]);
+    const order = canonicalDataForRow("order", row);
+    order.suppliedParts = parts.rows
+      .filter((part) => part.purchase_id !== purchaseId)
+      .map((part) => ({
+        ...rawObject(part), id: part.id, inventoryId: part.inventory_id || "", purchaseId: part.purchase_id || "",
+        purchaseItemId: part.purchase_item_id || "", part: part.part_name, qty: asNumber(part.qty), cost: asNumber(part.cost),
+        totalCost: asNumber(part.total_cost), createdAt: part.created_at
+      }));
+    await syncNormalizedRecord("order", { ...order, updatedAt: timestamp }, false, order.createdAt, timestamp);
+  }
+
+  const movements = await query(
+    "SELECT * FROM inventory_movements WHERE ref_id = $1 AND type = 'entrada' ORDER BY created_at DESC FOR UPDATE",
+    [purchaseId]
+  );
+  for (const movement of movements.rows) {
+    if (!movement.item_id) continue;
+    const itemResult = await query("SELECT * FROM inventory_items WHERE id = $1 FOR UPDATE", [movement.item_id]);
+    const item = itemResult.rows[0];
+    if (!item) continue;
+    const qty = Math.max(0, asNumber(movement.qty));
+    if (asNumber(item.stock) < qty) {
+      throw businessError(
+        `No se puede modificar la compra: ${item.name} ya fue consumido y faltan ${qty - asNumber(item.stock)} unidad(es) por conciliar.`,
+        "purchase_stock_already_consumed"
+      );
+    }
+    await syncNormalizedRecord("inventory", {
+      ...canonicalDataForRow("inventory", item),
+      stock: asNumber(item.stock) - qty,
+      updatedAt: timestamp
+    }, false, item.created_at, timestamp);
+  }
+  await query("DELETE FROM inventory_movements WHERE ref_id = $1 AND type = 'entrada'", [purchaseId]);
+}
+
 async function applyOrderInventoryEffects(order, archived = false, timestamp = now()) {
   if (!order?.id) return;
   const previous = await query(
@@ -753,10 +909,16 @@ async function applyOrderInventoryEffects(order, archived = false, timestamp = n
   for (const part of suppliedParts.filter((entry) => entry?.inventoryId)) {
     index += 1;
     const qty = Math.max(1, asNumber(part.qty || 1));
-    const itemResult = await query("SELECT * FROM inventory_items WHERE id = $1 AND archived = FALSE LIMIT 1", [part.inventoryId]);
+    const itemResult = await query("SELECT * FROM inventory_items WHERE id = $1 AND archived = FALSE LIMIT 1 FOR UPDATE", [part.inventoryId]);
     const item = itemResult.rows[0];
-    if (!item) continue;
-    const nextStock = Math.max(0, asNumber(item.stock) - qty);
+    if (!item) throw businessError(`La refaccion ${part.part || part.inventoryId} ya no existe en inventario.`, "inventory_item_missing");
+    if (asNumber(item.stock) < qty) {
+      throw businessError(
+        `Stock insuficiente para ${part.part || item.name}: disponible ${asNumber(item.stock)}, solicitado ${qty}.`,
+        "insufficient_stock"
+      );
+    }
+    const nextStock = asNumber(item.stock) - qty;
     const cost = Math.max(0, asNumber(part.cost || item.cost || item.raw_data?.cost));
     await syncNormalizedRecord("inventory", {
       ...(item.raw_data || {}),
@@ -800,10 +962,27 @@ async function prepareRecordForSave(type, requestedId, record) {
   data.id = recordId;
 
   if (type === "order") {
+    const statuses = new Set(["Recibido", "Diagnostico", "Esperando pieza", "En reparacion", "Listo", "Entregado", "Cancelado"]);
+    const priorities = new Set(["Baja", "Normal", "Alta", "Urgente"]);
+    const approvals = new Set(["Pendiente", "Aprobado", "Rechazado"]);
+    if (!statuses.has(data.status || "Recibido")) throw businessError("Estatus de orden invalido", "invalid_order_status", 400);
+    if (!priorities.has(data.priority || "Normal")) throw businessError("Prioridad invalida", "invalid_priority", 400);
+    if (!approvals.has(data.approvalStatus || "Pendiente")) throw businessError("Autorizacion invalida", "invalid_approval", 400);
+    if ((data.approvalStatus || "Pendiente") === "Aprobado" && !data.customerAuthorization) {
+      throw businessError("Falta registrar la autorizacion del cliente", "customer_authorization_required", 400);
+    }
+    if (data.status === "Entregado") {
+      data.deposit = Math.max(0, asNumber(data.total));
+      data.paid = true;
+      data.completedAt = data.completedAt || now();
+    }
     if (data.folio) data.folio = await resolveUniqueJsonField(type, recordId, "folio", data.folio);
     if (data.trackingCode) data.trackingCode = await resolveUniqueJsonField(type, recordId, "trackingCode", data.trackingCode);
   }
   if (type === "purchase" && data.folio) {
+    if (!["Cotizando", "Pedido", "Recibido", "Cancelado"].includes(data.status || "Cotizando")) {
+      throw businessError("Estatus de compra invalido", "invalid_purchase_status", 400);
+    }
     data.folio = await resolveUniqueJsonField(type, recordId, "folio", data.folio);
   }
   return { recordId, data };
@@ -896,7 +1075,58 @@ function requireRole(...roles) {
   };
 }
 
+function tableForType(type) {
+  return {
+    settings: "app_settings", client: "clients", supplier: "suppliers", inventory: "inventory_items",
+    order: "service_orders", purchase: "purchases", payment: "payments", appointment: "appointments",
+    warrantyClaim: "warranty_claims", inventoryMovement: "inventory_movements", auditEntry: "audit_entries"
+  }[type] || "";
+}
+
+function canWriteType(user, type) {
+  if (user?.role === "admin" || user?.role === "manager") return true;
+  return user?.role === "technician" && ["client", "order", "appointment", "warrantyClaim", "payment"].includes(type);
+}
+
+async function lockTypedRecord(type, recordId) {
+  const table = tableForType(type);
+  if (!table || !recordId) return null;
+  const timestampColumn = ["inventoryMovement", "auditEntry"].includes(type) ? "created_at" : "updated_at";
+  const result = await query(`SELECT id, ${timestampColumn} AS updated_at FROM ${table} WHERE id = $1 FOR UPDATE`, [recordId]);
+  return result.rows[0] || null;
+}
+
+function createRateLimiter({ windowMs, max, message, failuresOnly = false }) {
+  const buckets = new Map();
+  return (req, res, next) => {
+    const key = `${req.ip}:${String(req.body?.email || "").toLowerCase()}`;
+    const currentTime = Date.now();
+    const bucket = buckets.get(key);
+    const activeBucket = !bucket || bucket.resetAt <= currentTime
+      ? { count: 0, resetAt: currentTime + windowMs }
+      : bucket;
+    buckets.set(key, activeBucket);
+    if (activeBucket.count >= max) {
+      res.set("Retry-After", String(Math.ceil((activeBucket.resetAt - currentTime) / 1000)));
+      return res.status(429).json({ error: message });
+    }
+    if (failuresOnly) {
+      res.on("finish", () => {
+        if (res.statusCode === 401) activeBucket.count += 1;
+        else if (res.statusCode < 400) buckets.delete(key);
+      });
+    } else {
+      activeBucket.count += 1;
+    }
+    next();
+  };
+}
+
+const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10, failuresOnly: true, message: "Demasiados intentos. Espera 15 minutos e intenta de nuevo." });
+const publicPortalLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 60, message: "Demasiadas consultas. Espera un minuto." });
+
 app.use(helmet({ crossOriginResourcePolicy: false }));
+app.set("trust proxy", 1);
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",") || true }));
 app.use(express.json({ limit: "12mb" }));
 app.use("/api", (_req, res, next) => {
@@ -940,7 +1170,7 @@ app.get("/api/stability", async (_req, res) => {
   });
 });
 
-app.post("/api/auth/login", async (req, res) => {
+app.post("/api/auth/login", loginLimiter, async (req, res) => {
   const email = String(req.body?.email || "").toLowerCase();
   const result = await query("SELECT * FROM users WHERE email = $1 AND active = TRUE", [email]);
   const user = result.rows[0];
@@ -951,7 +1181,7 @@ app.post("/api/auth/login", async (req, res) => {
   res.json({ token: signToken(user), user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
-app.get("/api/public/orders/:folio", async (req, res) => {
+app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
   const lookup = String(req.params.folio || "").trim();
   const folio = lookup.toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
@@ -968,9 +1198,9 @@ app.get("/api/public/orders/:folio", async (req, res) => {
            FROM service_orders o
            LEFT JOIN clients c ON c.id = o.client_id
            WHERE o.archived = FALSE
-             AND regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g') LIKE $1
+             AND right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 10) = $1
            ORDER BY o.updated_at DESC LIMIT 1`,
-          [`%${digits.slice(-10)}%`]
+          [digits.slice(-10)]
         )
     : await query(
         "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 ORDER BY o.updated_at DESC LIMIT 1",
@@ -979,16 +1209,17 @@ app.get("/api/public/orders/:folio", async (req, res) => {
   if (normalizedResult.rows[0]) {
     const row = normalizedResult.rows[0];
     const order = row.raw_data || {};
-    const publicParts = (Array.isArray(order.suppliedParts) ? order.suppliedParts : []).map((part) => ({
-      part: part.part || part.partName || "Refaccion",
-      qty: Math.max(1, asNumber(part.qty || 1))
-    }));
+    const orderParts = await query("SELECT part_name, qty FROM order_parts WHERE order_id = $1 ORDER BY created_at ASC", [row.id]);
+    const publicParts = orderParts.rows.map((part) => ({ part: part.part_name || "Refaccion", qty: Math.max(1, asNumber(part.qty || 1)) }));
     return res.json({
       ok: true,
       order: {
         id: row.id,
         folio: row.folio,
         status: row.status,
+        priority: row.priority || "Normal",
+        promisedAt: row.promised_at || "",
+        approvalStatus: row.approval_status || "Pendiente",
         device: row.device,
         technician: row.technician || order.technician || "",
         serial: row.serial || order.serial || "",
@@ -1021,8 +1252,7 @@ app.get("/api/public/orders/:folio", async (req, res) => {
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.user }));
 
 app.get("/api/state", requireAuth, async (_req, res) => {
-  const payload = {};
-  for (const [stateKey, type] of [
+  const definitions = [
     ["settings", "settings"],
     ["clients", "client"],
     ["orders", "order"],
@@ -1034,13 +1264,56 @@ app.get("/api/state", requireAuth, async (_req, res) => {
     ["inventoryMovements", "inventoryMovement"],
     ["warrantyClaims", "warrantyClaim"],
     ["auditLog", "auditEntry"]
-  ]) {
-    const rows = await getNormalizedRecordsForType(type, false);
+  ];
+  const loaded = await Promise.all(definitions.map(async ([stateKey, type]) => [stateKey, type, await getNormalizedRecordsForType(type, false)]));
+  const payload = {};
+  for (const [stateKey, type, rows] of loaded) {
     payload[stateKey] = type === "settings"
       ? rows[0]?.data || null
       : rows.map((row) => row.data || row);
   }
   res.json({ ok: true, at: now(), data: payload });
+});
+
+app.post("/api/orders/:id/payments", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
+  const orderId = req.params.id;
+  const amount = asNumber(req.body?.amount);
+  if (amount <= 0) return res.status(400).json({ error: "El pago debe ser mayor a cero" });
+  try {
+    const result = await withTransaction(async () => {
+      const orderResult = await query("SELECT * FROM service_orders WHERE id = $1 AND archived = FALSE FOR UPDATE", [orderId]);
+      const orderRow = orderResult.rows[0];
+      if (!orderRow) throw businessError("La orden ya no existe o fue archivada", "order_not_found", 404);
+      const balance = Math.max(0, asNumber(orderRow.total) - asNumber(orderRow.deposit));
+      if (amount > balance + 0.001) {
+        throw businessError(`El pago excede el saldo disponible de ${balance.toFixed(2)}.`, "payment_exceeds_balance");
+      }
+      const timestamp = now();
+      const paymentId = id("pay");
+      const payment = {
+        id: paymentId,
+        orderId,
+        amount,
+        method: String(req.body?.method || "Efectivo"),
+        reference: String(req.body?.reference || ""),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      await syncNormalizedRecord("payment", payment, false, timestamp, timestamp);
+      const nextDeposit = Math.min(asNumber(orderRow.total), asNumber(orderRow.deposit) + amount);
+      const paid = nextDeposit >= asNumber(orderRow.total);
+      const orderData = { ...canonicalDataForRow("order", orderRow), deposit: nextDeposit, paid, updatedAt: timestamp };
+      await query(
+        "UPDATE service_orders SET deposit = $1, paid = $2, raw_data = $3, updated_at = $4 WHERE id = $5",
+        [nextDeposit, paid, JSON.stringify(orderData), timestamp, orderId]
+      );
+      await audit(req.user.sub, "payment_create", "payment", paymentId, `${orderRow.folio}: ${amount}`);
+      return { payment, balance: Math.max(0, asNumber(orderRow.total) - nextDeposit), paid };
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(error?.status || 500).json({ error: error?.message || "No se pudo registrar el pago", code: error?.code || "payment_failed" });
+  }
 });
 
 app.get("/api/records/:type", requireAuth, async (req, res) => {
@@ -1053,41 +1326,70 @@ app.get("/api/records/:type", requireAuth, async (req, res) => {
 app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
   const { type } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
+  if (!canWriteType(req.user, type)) return res.status(403).json({ error: "Tu rol no puede modificar este modulo" });
   const record = req.body?.data || {};
-  const prepared = await prepareRecordForSave(type, req.body?.id || record.id, record);
-  const { recordId, data } = prepared;
-  const timestamp = now();
-  const existing = await findProfessionalRecordById(recordId);
-  try {
-    await syncNormalizedRecord(type, data, Boolean(record.archived), timestamp, timestamp);
-  } catch (error) {
-    if (error?.code !== "23505") {
-      console.error(`Error guardando ${type}`, {
-        code: error?.code,
-        detail: error?.detail,
-        message: error?.message,
-        recordId
-      });
-      return res.status(500).json({
-        error: `No se pudo guardar ${type}: ${error?.detail || error?.message || "Error interno"}`,
-        code: error?.code || "save_failed"
-      });
+  const requestedId = req.body?.id || record.id;
+  const expectedUpdatedAt = String(req.body?.expectedUpdatedAt || "");
+  const saveAttempt = async (forcedId = requestedId) => withTransaction(async () => {
+    const prepared = await prepareRecordForSave(type, forcedId, record);
+    const { recordId, data } = prepared;
+    const locked = await lockTypedRecord(type, recordId);
+    if (locked && expectedUpdatedAt && String(locked.updated_at) !== expectedUpdatedAt) {
+      throw businessError(
+        "Este registro fue modificado por otra persona. Los datos se recargaron; revisa los cambios antes de guardar.",
+        "stale_record"
+      );
     }
-    const retry = await prepareRecordForSave(type, appendConsecutive(recordId, 2), data);
-    await syncNormalizedRecord(type, retry.data, Boolean(record.archived), timestamp, timestamp);
-    await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${recordId}`);
-    return res.status(201).json({ id: retry.recordId, data: retry.data, deduped: true });
+    const timestamp = now();
+    await syncNormalizedRecord(type, data, Boolean(record.archived), locked?.created_at || timestamp, timestamp);
+    await audit(req.user.sub, locked ? "update" : "create", type, recordId, req.body?.detail || "");
+    return { recordId, data, existing: Boolean(locked) };
+  });
+
+  try {
+    const saved = await saveAttempt();
+    return res.status(saved.existing ? 200 : 201).json({
+      id: saved.recordId,
+      data: saved.data,
+      deduped: saved.recordId !== requestedId
+    });
+  } catch (error) {
+    if (error?.constraint === "uq_inventory_sku_active") {
+      return res.status(409).json({ error: "Ese SKU ya pertenece a otro articulo activo.", code: "duplicate_sku" });
+    }
+    if (error?.code === "23505") {
+      try {
+        const retry = await saveAttempt(appendConsecutive(requestedId, 2));
+        await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${requestedId}`);
+        return res.status(201).json({ id: retry.recordId, data: retry.data, deduped: true });
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
+    if (error?.code === "23503") {
+      return res.status(409).json({ error: "El registro relacionado ya no existe. Recarga la base de datos e intenta de nuevo.", code: "invalid_relation" });
+    }
+    console.error(`Error guardando ${type}`, { code: error?.code, detail: error?.detail, message: error?.message, recordId: requestedId });
+    return res.status(error?.status || 500).json({
+      error: error?.status ? error.message : `No se pudo guardar ${type}: ${error?.detail || error?.message || "Error interno"}`,
+      code: error?.code || "save_failed"
+    });
   }
-  await audit(req.user.sub, existing ? "update" : "create", type, recordId, req.body?.detail || "");
-  res.status(existing ? 200 : 201).json({ id: recordId, data, deduped: recordId !== (req.body?.id || record.id) });
 });
 
 app.post("/api/records/:type/:id/archive", requireAuth, requireRole("admin", "manager"), async (req, res) => {
   const { type, id: recordId } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
-  await archiveNormalizedRecord(type, recordId);
-  await audit(req.user.sub, "archive", type, recordId, req.body?.detail || "");
-  res.json({ ok: true });
+  try {
+    await withTransaction(async () => {
+      await lockTypedRecord(type, recordId);
+      await archiveNormalizedRecord(type, recordId);
+      await audit(req.user.sub, "archive", type, recordId, req.body?.detail || "");
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(error?.status || 500).json({ error: error?.message || "No se pudo archivar", code: error?.code || "archive_failed" });
+  }
 });
 
 app.get("/api/audit", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
@@ -1147,7 +1449,10 @@ async function getStabilityReport() {
       "orden.trackingCode unico en ordenes activas",
       "compra.folio unico en compras activas",
       "id primario unico por tabla profesional",
-      "lectura y escritura directa en tablas profesionales"
+      "lectura y escritura directa en tablas profesionales",
+      "guardados criticos dentro de transacciones PostgreSQL",
+      "stock no negativo y relaciones nuevas protegidas con llaves foraneas",
+      "control de concurrencia por updated_at"
     ],
     duplicates: {
       orderFolio: ordersFolio,
@@ -1188,7 +1493,7 @@ async function getPurchaseSourceReport(includeRows = false) {
   return {
     backendVersion,
     sourceTable: "purchases",
-    selectUsedByApp: "SELECT id, raw_data AS data, archived, created_at, updated_at FROM purchases WHERE archived = FALSE ORDER BY updated_at DESC",
+    selectUsedByApp: "SELECT * FROM purchases WHERE archived = FALSE; productos desde purchase_items; columnas normalizadas prevalecen sobre raw_data",
     database: dbInfo.rows[0],
     counts: purchaseCounts.rows[0],
     legacyRecordsTable: {
@@ -1244,7 +1549,10 @@ async function getAnalyticsReport() {
         COUNT(*) FILTER (WHERE archived = FALSE AND status NOT IN ('Entregado','Cancelado'))::int AS active_orders,
         COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Listo')::int AS ready_orders,
         COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Entregado')::int AS delivered_orders,
-        COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Cancelado')::int AS canceled_orders
+        COUNT(*) FILTER (WHERE archived = FALSE AND status = 'Cancelado')::int AS canceled_orders,
+        COUNT(*) FILTER (WHERE archived = FALSE AND status NOT IN ('Entregado','Cancelado') AND COALESCE(promised_at, '') <> '' AND promised_at::timestamptz < NOW())::int AS overdue_orders,
+        COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at::timestamptz - created_at::timestamptz)) / 86400.0)
+          FILTER (WHERE archived = FALSE AND status = 'Entregado' AND COALESCE(completed_at, '') <> ''), 0) AS average_cycle_days
       FROM service_orders
     `),
     query(`
@@ -1262,7 +1570,9 @@ async function getAnalyticsReport() {
       SELECT
         COALESCE(SUM(o.total), 0) AS revenue,
         COALESCE(SUM(COALESCE(c.parts_cost, 0)), 0) AS parts_cost,
-        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0)), 0) AS gross_margin,
+        COALESCE(SUM(o.labor_cost), 0) AS labor_cost,
+        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0) - o.labor_cost), 0) AS gross_margin,
+        COALESCE(SUM(o.deposit), 0) AS collected,
         COALESCE(SUM(GREATEST(o.total - GREATEST(o.deposit, COALESCE(p.payments, 0)), 0)), 0) AS receivables
       FROM service_orders o
       LEFT JOIN order_costs c ON c.order_id = o.id
@@ -1328,7 +1638,9 @@ async function getAnalyticsReport() {
       ...(orderMetrics.rows[0] || {}),
       revenue: asNumber(finance.revenue),
       partsCost: asNumber(finance.parts_cost),
+      laborCost: asNumber(finance.labor_cost),
       grossMargin: asNumber(finance.gross_margin),
+      collected: asNumber(finance.collected),
       marginRate,
       receivables: asNumber(finance.receivables),
       lowStock: inventoryMetrics.rows[0]?.low_stock || 0,
@@ -1395,6 +1707,21 @@ async function getIntegrityReport() {
       sql: "SELECT COUNT(*)::int AS total FROM order_parts op LEFT JOIN inventory_items i ON i.id = op.inventory_id WHERE COALESCE(op.inventory_id, '') <> '' AND i.id IS NULL"
     },
     {
+      key: "receivedPurchasesWithoutMovement",
+      label: "Compras recibidas sin entrada de inventario",
+      sql: "SELECT COUNT(*)::int AS total FROM purchases p WHERE p.archived = FALSE AND p.status = 'Recibido' AND NOT EXISTS (SELECT 1 FROM inventory_movements m WHERE m.ref_id = p.id AND m.type = 'entrada')"
+    },
+    {
+      key: "deliveredOrdersWithBalance",
+      label: "Ordenes entregadas con saldo inconsistente",
+      sql: "SELECT COUNT(*)::int AS total FROM service_orders WHERE archived = FALSE AND status = 'Entregado' AND (paid = FALSE OR deposit < total)"
+    },
+    {
+      key: "incorrectPartTotals",
+      label: "Costos de refaccion sin cuadrar",
+      sql: "SELECT COUNT(*)::int AS total FROM order_parts WHERE abs(total_cost - (qty * cost)) > 0.01"
+    },
+    {
       key: "negativeBusinessValues",
       label: "Valores negativos bloqueados por reglas",
       sql: "SELECT 0::int AS total"
@@ -1415,49 +1742,104 @@ async function getIntegrityReport() {
   };
 }
 
+function rawObject(row) {
+  if (!row?.raw_data) return {};
+  if (typeof row.raw_data === "object") return row.raw_data;
+  try { return JSON.parse(row.raw_data); } catch { return {}; }
+}
+
+function canonicalDataForRow(type, row) {
+  const raw = rawObject(row);
+  const common = {
+    ...raw,
+    id: row.id,
+    archived: Boolean(row.archived),
+    createdAt: row.created_at || raw.createdAt || row.updated_at,
+    updatedAt: row.updated_at || raw.updatedAt || row.created_at
+  };
+  if (type === "settings") return {
+    ...raw,
+    id: row.id,
+    businessName: row.business_name || "",
+    businessPhone: row.business_phone || "",
+    businessAddress: row.business_address || "",
+    whatsappTemplate: row.whatsapp_template || "",
+    theme: row.theme || {},
+    updatedAt: row.updated_at
+  };
+  if (type === "client") return { ...common, name: row.name, phone: row.phone || "", email: row.email || "", address: row.address || "" };
+  if (type === "supplier") return { ...common, name: row.name, contact: row.contact || "", phone: row.phone || "", email: row.email || "", category: row.category || "", notes: row.notes || "" };
+  if (type === "inventory") return {
+    ...common, sku: row.sku || "", location: row.location || "", brand: row.brand || "", model: row.model || "",
+    name: row.name, category: row.category || "", stock: asNumber(row.stock), min: asNumber(row.min_stock),
+    minStock: asNumber(row.min_stock), cost: asNumber(row.cost), subdealerPrice: asNumber(row.subdealer_price), price: asNumber(row.price)
+  };
+  if (type === "order") return {
+    ...common, folio: row.folio, trackingCode: row.tracking_code || "", clientId: row.client_id || "",
+    device: row.device, technician: row.technician || "", serial: row.serial || "", status: row.status,
+    priority: row.priority || "Normal", promisedAt: row.promised_at || "", approvalStatus: row.approval_status || "Pendiente",
+    issue: row.issue || "", notes: row.notes || "", accessories: row.accessories || "", physicalState: row.physical_state || "",
+    total: asNumber(row.total), laborCost: asNumber(row.labor_cost), deposit: asNumber(row.deposit), paid: Boolean(row.paid),
+    warrantyDays: Number(row.warranty_days || 90), warrantyTerms: row.warranty_terms || "", approved: Boolean(row.approved),
+    quotePartName: row.quote_part_name || "", quoteSupplierId: row.quote_supplier_id || "",
+    statusHistory: row.status_history || [], statusEvidencePhotos: row.status_evidence_photos || [], completedAt: row.completed_at || ""
+  };
+  if (type === "purchase") return {
+    ...common, folio: row.folio, supplierId: row.supplier_id || "", orderId: row.order_id || "", part: row.part || "",
+    qty: asNumber(row.qty), cost: asNumber(row.cost), status: row.status, notes: row.notes || "",
+    receivedAt: row.received_at || "", receivedQuantities: row.received_quantities || {}
+  };
+  if (type === "payment") return { ...common, orderId: row.order_id || "", amount: asNumber(row.amount), method: row.method || "", reference: row.reference || "" };
+  if (type === "appointment") return { ...common, clientId: row.client_id || "", orderId: row.order_id || "", date: row.date || "", time: row.time || "", type: row.type || "", notes: row.notes || "" };
+  if (type === "warrantyClaim") return { ...common, orderId: row.order_id || "", reason: row.reason || "", resolution: row.resolution || "", status: row.status || "", cost: asNumber(row.cost) };
+  if (type === "inventoryMovement") return { ...common, itemId: row.item_id || "", itemName: row.item_name || "", qty: asNumber(row.qty), type: row.type || "", detail: row.detail || "", refId: row.ref_id || "" };
+  if (type === "auditEntry") return { ...common, type: row.type || "", detail: row.detail || "", refId: row.ref_id || "" };
+  return common;
+}
+
+function normalizedEnvelope(type, row, data) {
+  return { id: row.id, type, data, archived: Boolean(row.archived), created_at: row.created_at, updated_at: row.updated_at || row.created_at };
+}
+
 async function getNormalizedRecordsForType(type, includeArchived = false) {
   const archivedClause = includeArchived ? "" : "WHERE archived = FALSE";
   const simpleMap = {
-    client: ["clients", "updated_at"],
-    supplier: ["suppliers", "updated_at"],
-    inventory: ["inventory_items", "updated_at"],
-    order: ["service_orders", "updated_at"],
-    purchase: ["purchases", "updated_at"],
-    payment: ["payments", "updated_at"],
-    appointment: ["appointments", "updated_at"],
-    warrantyClaim: ["warranty_claims", "updated_at"]
+    client: ["clients", "updated_at"], supplier: ["suppliers", "updated_at"], inventory: ["inventory_items", "updated_at"],
+    order: ["service_orders", "updated_at"], purchase: ["purchases", "updated_at"], payment: ["payments", "updated_at"],
+    appointment: ["appointments", "updated_at"], warrantyClaim: ["warranty_claims", "updated_at"]
   };
   if (type === "settings") {
-    const result = await query("SELECT id, raw_data AS data, FALSE AS archived, updated_at AS created_at, updated_at FROM app_settings ORDER BY updated_at DESC LIMIT 1");
-    return result.rows.map((row) => ({
-      id: row.id,
-      type,
-      data: row.data,
-      archived: false,
-      created_at: row.created_at,
-      updated_at: row.updated_at
-    }));
+    const result = await query("SELECT * FROM app_settings ORDER BY updated_at DESC LIMIT 1");
+    return result.rows.map((row) => normalizedEnvelope(type, row, canonicalDataForRow(type, row)));
   }
-  if (type === "inventoryMovement") {
-    const result = await query("SELECT id, raw_data AS data, FALSE AS archived, created_at, created_at AS updated_at FROM inventory_movements ORDER BY created_at DESC");
-    return result.rows.map((row) => ({ id: row.id, type, data: row.data, archived: false, created_at: row.created_at, updated_at: row.updated_at }));
-  }
-  if (type === "auditEntry") {
-    const result = await query("SELECT id, raw_data AS data, FALSE AS archived, created_at, created_at AS updated_at FROM audit_entries ORDER BY created_at DESC");
-    return result.rows.map((row) => ({ id: row.id, type, data: row.data, archived: false, created_at: row.created_at, updated_at: row.updated_at }));
+  if (type === "inventoryMovement" || type === "auditEntry") {
+    const table = type === "inventoryMovement" ? "inventory_movements" : "audit_entries";
+    const result = await query(`SELECT *, FALSE AS archived, created_at AS updated_at FROM ${table} ORDER BY created_at DESC`);
+    return result.rows.map((row) => normalizedEnvelope(type, row, canonicalDataForRow(type, row)));
   }
   const map = simpleMap[type];
   if (!map) return [];
   const [table, orderColumn] = map;
-  const result = await query(`SELECT id, raw_data AS data, archived, created_at, updated_at FROM ${table} ${archivedClause} ORDER BY ${orderColumn} DESC`);
-  return result.rows.map((row) => ({
-    id: row.id,
-    type,
-    data: row.data,
-    archived: Boolean(row.archived),
-    created_at: row.created_at,
-    updated_at: row.updated_at
-  }));
+  const result = await query(`SELECT * FROM ${table} ${archivedClause} ORDER BY ${orderColumn} DESC`);
+  let childRows = [];
+  if (type === "order" && result.rows.length) {
+    childRows = (await query("SELECT * FROM order_parts WHERE order_id = ANY($1::text[]) ORDER BY created_at ASC", [result.rows.map((row) => row.id)])).rows;
+  }
+  if (type === "purchase" && result.rows.length) {
+    childRows = (await query("SELECT * FROM purchase_items WHERE purchase_id = ANY($1::text[])", [result.rows.map((row) => row.id)])).rows;
+  }
+  return result.rows.map((row) => {
+    const data = canonicalDataForRow(type, row);
+    if (type === "order") data.suppliedParts = childRows.filter((part) => part.order_id === row.id).map((part) => ({
+      ...rawObject(part), id: part.id, inventoryId: part.inventory_id || "", purchaseId: part.purchase_id || "",
+      purchaseItemId: part.purchase_item_id || "", part: part.part_name, qty: asNumber(part.qty), cost: asNumber(part.cost),
+      totalCost: asNumber(part.total_cost), createdAt: part.created_at
+    }));
+    if (type === "purchase") data.items = childRows.filter((item) => item.purchase_id === row.id).map((item) => ({
+      ...rawObject(item), id: item.id, part: item.part, qty: asNumber(item.qty), cost: asNumber(item.cost)
+    }));
+    return normalizedEnvelope(type, row, data);
+  });
 }
 
 async function archiveNormalizedRecord(type, recordId) {
@@ -1474,6 +1856,12 @@ async function archiveNormalizedRecord(type, recordId) {
   const table = tableMap[type];
   if (!table) return;
   let orderData = null;
+  if (type === "purchase") {
+    const purchase = await query("SELECT status FROM purchases WHERE id = $1 FOR UPDATE", [recordId]);
+    if (normalizeSearchKey(purchase.rows[0]?.status) === "recibido") {
+      await revertReceivedPurchaseEffects(recordId, now());
+    }
+  }
   if (type === "order") {
     const current = await query("SELECT raw_data FROM service_orders WHERE id = $1 LIMIT 1", [recordId]);
     orderData = current.rows[0]?.raw_data || null;
