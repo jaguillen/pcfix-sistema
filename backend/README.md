@@ -18,6 +18,10 @@ DATABASE_URL=postgresql://...
 ADMIN_EMAIL=admin@pcfix.local
 ADMIN_PASSWORD=pon-una-clave-segura
 JWT_SECRET=clave-larga-aleatoria
+SENSITIVE_DATA_KEY=otra-clave-larga-aleatoria
+SUPABASE_URL=https://tu-proyecto.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=secreto-del-backend
+SUPABASE_EVIDENCE_BUCKET=pcfix-evidence
 ```
 
 El backend crea las tablas profesionales al iniciar y elimina tablas heredadas `records` y `files` si existen.
@@ -30,8 +34,11 @@ El backend crea las tablas profesionales al iniciar y elimina tablas heredadas `
 - `POST /api/records/:type`
 - `POST /api/records/:type/:id/archive`
 - `POST /api/orders/:id/payments`
-- `GET /api/public/orders/:folio`
-- `GET /api/stability`
+- `GET /api/public/orders/:folio?code=CODIGO`
+- `POST /api/public/orders/:folio/approval`
+- `GET /api/state/revision`
+- `POST /api/files/evidence`
+- `GET /api/stability` (requiere rol admin o manager)
 - `GET /api/admin/stability`
 - `GET /api/admin/analytics`
 - `GET /api/admin/integrity`
@@ -50,3 +57,6 @@ Tipos permitidos:
 - La API devuelve datos desde las columnas normalizadas y usa `raw_data` solo para extensiones.
 - El portal cliente consulta directo a BD por folio con `/api/public/orders/:folio`.
 - Todas las respuestas `/api` se entregan con `Cache-Control: no-store`.
+- Las consultas y mutaciones se filtran por rol antes de salir de la API.
+- Las evidencias se guardan en Storage privado y se sirven mediante enlaces temporales.
+- El patron o clave de desbloqueo se cifra en reposo y su consulta queda auditada.

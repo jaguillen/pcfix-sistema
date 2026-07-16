@@ -239,6 +239,18 @@ CREATE TABLE IF NOT EXISTS audit_entries (
   created_at TEXT NOT NULL DEFAULT now()::text
 );
 
+CREATE TABLE IF NOT EXISTS order_approvals (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL REFERENCES service_orders(id) ON DELETE CASCADE,
+  decision TEXT NOT NULL CHECK (decision IN ('Aprobado','Rechazado')),
+  customer_name TEXT NOT NULL,
+  ip_hash TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT now()::text
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_approvals_order ON order_approvals (order_id, created_at DESC);
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_service_orders_folio_active
   ON service_orders (lower(folio))
   WHERE archived = FALSE;
@@ -282,5 +294,48 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_movements_item') THEN
     ALTER TABLE inventory_movements ADD CONSTRAINT fk_movements_item FOREIGN KEY (item_id) REFERENCES inventory_items(id) NOT VALID;
+  END IF;
+END $$;
+
+-- El sistema usa exclusivamente el backend. Bloquea acceso directo anonimo a Data API.
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE suppliers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE service_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_parts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE purchase_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE warranty_claims ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_approvals ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE
+  app_settings, clients, suppliers, inventory_items, service_orders, order_parts,
+  purchases, purchase_items, payments, appointments, warranty_claims,
+  inventory_movements, audit_entries, order_approvals
+FROM anon, authenticated;
+
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_service_orders_client') THEN
+    ALTER TABLE service_orders VALIDATE CONSTRAINT fk_service_orders_client;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchases_supplier') THEN
+    ALTER TABLE purchases VALIDATE CONSTRAINT fk_purchases_supplier;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchases_order') THEN
+    ALTER TABLE purchases VALIDATE CONSTRAINT fk_purchases_order;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payments_order') THEN
+    ALTER TABLE payments VALIDATE CONSTRAINT fk_payments_order;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_warranties_order') THEN
+    ALTER TABLE warranty_claims VALIDATE CONSTRAINT fk_warranties_order;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_movements_item') THEN
+    ALTER TABLE inventory_movements VALIDATE CONSTRAINT fk_movements_item;
   END IF;
 END $$;

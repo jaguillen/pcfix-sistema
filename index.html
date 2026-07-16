@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-compras-visual-20260716-04">
+    <meta name="pcfix-version" content="pcfix-seguridad-calidad-20260716-05">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -70,7 +70,8 @@
             <article class="metric"><span>Ordenes activas</span><strong id="metricOrders">0</strong></article>
             <article class="metric"><span>Compras</span><strong id="metricPurchases">0</strong></article>
             <article class="metric"><span>Inventario bajo</span><strong id="metricLowStock">0</strong></article>
-            <article class="metric"><span>Ingresos</span><strong id="metricRevenue">$0</strong></article>
+            <article class="metric"><span>Ventas realizadas</span><strong id="metricRevenue">$0</strong></article>
+            <article class="metric"><span>Cobrado</span><strong id="metricCollected">$0</strong></article>
             <article class="metric"><span>Margen real</span><strong id="metricMargin">0%</strong></article>
             <article class="metric"><span>Ordenes vencidas</span><strong id="metricOverdue">0</strong></article>
             <article class="metric"><span>Ciclo promedio</span><strong id="metricCycle">0 dias</strong></article>
@@ -161,6 +162,13 @@
               <input id="orderEvidence" type="file" accept="image/*" multiple>
             </label>
             <div id="evidencePreview" class="photo-strip"></div>
+            <section class="quality-workspace">
+              <div class="quality-head"><div><span>Control tecnico</span><h2>Recepcion y pruebas funcionales</h2></div><small>El resultado queda ligado a la orden.</small></div>
+              <div class="quality-columns">
+                <div><h3>Al recibir</h3><div id="intakeChecklist" class="quality-checklist"></div></div>
+                <div><h3>Antes de entregar</h3><div id="finalChecklist" class="quality-checklist"></div></div>
+              </div>
+            </section>
             <label>Refacciones a usar
               <div class="parts-picker premium-picker">
                 <div class="inline-field">
@@ -207,12 +215,17 @@
                 <label>Ubicacion<input id="itemLocation" placeholder="Ej. A-02"></label>
                 <label>Categoria<input id="itemCategory" list="categorySuggestions" required></label>
                 <datalist id="categorySuggestions"></datalist>
+                <label>Proveedor<select id="itemSupplier"><option value="">Sin proveedor</option></select></label>
+                <label>Calidad<select id="itemQuality"><option>Original</option><option>OEM</option><option selected>Compatible</option><option>Reacondicionada</option><option>Por verificar</option></select></label>
+                <label>Lote<input id="itemLot" placeholder="Folio o lote de compra"></label>
+                <label>Garantia proveedor (dias)<input id="itemSupplierWarranty" type="number" min="0" value="0"></label>
                 <label>Stock<input id="itemStock" type="number" min="0" value="1"></label>
                 <label>Minimo<input id="itemMin" type="number" min="1" value="1"></label>
                 <label>Costo<input id="itemCost" type="number" min="0" step="0.01" value="0"></label>
                 <label>Subdistribuidor<input id="itemSubdealer" type="number" min="0" step="0.01" value="0" readonly></label>
                 <label>Precio publico<input id="itemPrice" type="number" min="0" step="0.01" value="0"></label>
               </div>
+              <label>Series individuales<textarea id="itemSerials" rows="2" placeholder="Una serie por linea para piezas o equipos de alto valor"></textarea></label>
               <button class="btn primary" type="submit">Guardar articulo</button>
               <button class="btn ghost" type="button" data-reset="inventory">Limpiar</button>
             </form>
@@ -325,6 +338,11 @@
               <input id="warrantyId" type="hidden">
               <label>Orden<select id="warrantyOrder"></select></label>
               <label>Motivo<textarea id="warrantyReason" rows="3" required></textarea></label>
+              <div class="form-grid">
+                <label>Causa raiz<select id="warrantyRootCause"><option>Por determinar</option><option>Refaccion defectuosa</option><option>Instalacion</option><option>Diagnostico incompleto</option><option>Software</option><option>Dano nuevo / no cubierto</option></select></label>
+                <label>Proveedor relacionado<select id="warrantySupplier"><option value="">Sin proveedor</option></select></label>
+              </div>
+              <label>Refaccion relacionada<input id="warrantyPart" placeholder="Pieza vinculada a la reclamacion"></label>
               <label>Resolucion<textarea id="warrantyResolution" rows="3"></textarea></label>
               <div class="form-grid">
                 <label>Estatus<select id="warrantyStatus"><option>Abierta</option><option>En revision</option><option>Resuelta</option><option>Rechazada</option></select></label>
@@ -348,6 +366,7 @@
             <form id="portalForm" class="panel form-panel">
               <div class="panel-header"><h2>Portal cliente</h2></div>
               <label>Folio de orden o WhatsApp<input id="portalFolio" placeholder="PCF-2026-0001 o 9631234567" required></label>
+              <label>Codigo de seguimiento<input id="portalCode" placeholder="Codigo incluido en tu enlace" autocomplete="one-time-code" required></label>
               <button class="btn primary" type="submit">Consultar</button>
             </form>
             <section class="portal-result-shell"><div id="portalResult" class="portal-result"></div></section>

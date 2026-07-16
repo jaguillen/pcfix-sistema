@@ -6,6 +6,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Pool } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { pendingQualityChecks } from "./domain.js";
 
 dotenv.config();
 
@@ -13,7 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-modulos-premium-20260716-02";
+const backendVersion = "pcfix-backend-seguridad-calidad-20260716-05";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -23,6 +25,16 @@ if (!jwtSecret || jwtSecret.length < 32) {
   console.error("Falta JWT_SECRET o es demasiado corto. Configura al menos 32 caracteres en Render.");
   process.exit(1);
 }
+
+const sensitiveDataSecret = process.env.SENSITIVE_DATA_KEY || jwtSecret;
+const sensitiveDataKey = createHash("sha256").update(sensitiveDataSecret).digest();
+const supabaseUrl = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const evidenceBucket = process.env.SUPABASE_EVIDENCE_BUCKET || "pcfix-evidence";
+const productionCorsOrigins = String(process.env.CORS_ORIGIN || "https://pcfix-sistema.onrender.com")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 const pool = new Pool({
   connectionString: databaseUrl,
@@ -84,6 +96,127 @@ function asJson(value, fallback = []) {
   return JSON.stringify(value ?? fallback);
 }
 
+function encryptSensitive(value) {
+  const plaintext = String(value || "").trim();
+  if (!plaintext) return "";
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", sensitiveDataKey, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1.${iv.toString("base64url")}.${tag.toString("base64url")}.${encrypted.toString("base64url")}`;
+}
+
+function decryptSensitive(payload) {
+  try {
+    const [version, ivValue, tagValue, encryptedValue] = String(payload || "").split(".");
+    if (version !== "v1" || !ivValue || !tagValue || !encryptedValue) return "";
+    const decipher = createDecipheriv("aes-256-gcm", sensitiveDataKey, Buffer.from(ivValue, "base64url"));
+    decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function storageConfigured() {
+  return Boolean(supabaseUrl && supabaseServiceKey);
+}
+
+function storageHeaders(extra = {}) {
+  return {
+    apikey: supabaseServiceKey,
+    Authorization: `Bearer ${supabaseServiceKey}`,
+    ...extra
+  };
+}
+
+function storageObjectPath(path) {
+  return String(path || "").split("/").map(encodeURIComponent).join("/");
+}
+
+async function ensureEvidenceBucket() {
+  if (!storageConfigured()) return false;
+  const current = await fetch(`${supabaseUrl}/storage/v1/bucket/${encodeURIComponent(evidenceBucket)}`, {
+    headers: storageHeaders()
+  });
+  if (current.ok) return true;
+  if (current.status !== 404) throw new Error(`No se pudo consultar Storage (${current.status})`);
+  const created = await fetch(`${supabaseUrl}/storage/v1/bucket`, {
+    method: "POST",
+    headers: storageHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      id: evidenceBucket,
+      name: evidenceBucket,
+      public: false,
+      file_size_limit: 3 * 1024 * 1024,
+      allowed_mime_types: ["image/jpeg", "image/png", "image/webp"]
+    })
+  });
+  if (!created.ok && created.status !== 409) throw new Error(`No se pudo crear bucket privado (${created.status})`);
+  return true;
+}
+
+function decodeEvidenceDataUrl(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([a-z0-9+/=\r\n]+)$/i);
+  if (!match) throw businessError("Formato de evidencia no permitido", "invalid_evidence_format", 400);
+  const buffer = Buffer.from(match[2], "base64");
+  if (!buffer.length || buffer.length > 3 * 1024 * 1024) {
+    throw businessError("Cada fotografia debe pesar menos de 3 MB", "evidence_too_large", 400);
+  }
+  const mime = match[1].toLowerCase();
+  const validSignature = mime === "image/jpeg"
+    ? buffer[0] === 0xff && buffer[1] === 0xd8
+    : mime === "image/png"
+      ? buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      : buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP";
+  if (!validSignature) throw businessError("El contenido de la fotografia no coincide con su formato", "invalid_evidence_signature", 400);
+  return { buffer, mime };
+}
+
+async function uploadEvidencePhoto(orderId, photo) {
+  const { buffer, mime } = decodeEvidenceDataUrl(photo.dataUrl);
+  const extension = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" }[mime];
+  const safeOrderId = String(orderId || "orden").replace(/[^a-z0-9_-]/gi, "_");
+  const path = `orders/${safeOrderId}/${Date.now()}-${randomBytes(6).toString("hex")}.${extension}`;
+  const response = await fetch(`${supabaseUrl}/storage/v1/object/${encodeURIComponent(evidenceBucket)}/${storageObjectPath(path)}`, {
+    method: "POST",
+    headers: storageHeaders({ "Content-Type": mime, "x-upsert": "false" }),
+    body: buffer
+  });
+  if (!response.ok) throw businessError("No se pudo guardar evidencia en Storage", "evidence_upload_failed", 502);
+  return {
+    id: photo.id || id("photo"),
+    name: String(photo.name || `evidencia.${extension}`).slice(0, 120),
+    type: mime,
+    path,
+    uploadedAt: now()
+  };
+}
+
+async function signEvidencePath(path, expiresIn = 900) {
+  if (!storageConfigured() || !path) return "";
+  const response = await fetch(`${supabaseUrl}/storage/v1/object/sign/${encodeURIComponent(evidenceBucket)}/${storageObjectPath(path)}`, {
+    method: "POST",
+    headers: storageHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ expiresIn })
+  });
+  if (!response.ok) return "";
+  const payload = await response.json().catch(() => ({}));
+  const signed = payload.signedURL || payload.signedUrl || "";
+  if (!signed) return "";
+  if (/^https?:\/\//i.test(signed)) return signed;
+  const storagePath = signed.startsWith("/storage/v1/") ? signed : `/storage/v1${signed.startsWith("/") ? "" : "/"}${signed}`;
+  return new URL(storagePath, supabaseUrl).href;
+}
+
+async function materializeEvidencePhotos(photos, expiresIn = 900) {
+  return Promise.all((photos || []).slice(0, 12).map(async (photo) => {
+    if (photo?.dataUrl) return photo;
+    const url = await signEvidencePath(photo?.path, expiresIn);
+    return { ...photo, url };
+  }));
+}
+
 function normalizeRecord(row) {
   return {
     id: row.id,
@@ -115,6 +248,27 @@ async function withTransaction(work) {
   } finally {
     client.release();
   }
+}
+
+async function getStateRevision() {
+  const result = await query(`
+    SELECT COALESCE(MAX(marker), '') AS revision
+    FROM (
+      SELECT MAX(updated_at) AS marker FROM app_settings
+      UNION ALL SELECT MAX(updated_at) FROM clients
+      UNION ALL SELECT MAX(updated_at) FROM suppliers
+      UNION ALL SELECT MAX(updated_at) FROM inventory_items
+      UNION ALL SELECT MAX(updated_at) FROM service_orders
+      UNION ALL SELECT MAX(updated_at) FROM purchases
+      UNION ALL SELECT MAX(updated_at) FROM payments
+      UNION ALL SELECT MAX(updated_at) FROM appointments
+      UNION ALL SELECT MAX(updated_at) FROM warranty_claims
+      UNION ALL SELECT MAX(created_at) FROM inventory_movements
+      UNION ALL SELECT MAX(created_at) FROM order_approvals
+      UNION ALL SELECT MAX(created_at) FROM users
+    ) revisions
+  `);
+  return String(result.rows[0]?.revision || "");
 }
 
 function businessError(message, code = "business_rule", status = 409) {
@@ -180,6 +334,45 @@ async function runStabilityMigration() {
   await dropLegacyOfflineTables();
   await repairProfessionalDuplicateBusinessKeys();
   await createProfessionalConstraints();
+  await migrateLegacyUnlockPatterns();
+  await hardenDatabaseExposure();
+}
+
+async function migrateLegacyUnlockPatterns() {
+  const result = await query("SELECT id, status, raw_data FROM service_orders WHERE raw_data ? 'unlockPattern'");
+  for (const row of result.rows) {
+    const raw = rawObject(row);
+    const plaintext = String(raw.unlockPattern || "").trim();
+    delete raw.unlockPattern;
+    if (plaintext && !["Entregado", "Cancelado"].includes(row.status)) {
+      raw.unlockPatternEncrypted = encryptSensitive(plaintext);
+    } else if (["Entregado", "Cancelado"].includes(row.status)) {
+      delete raw.unlockPatternEncrypted;
+    }
+    await query("UPDATE service_orders SET raw_data = $1 WHERE id = $2", [JSON.stringify(raw), row.id]);
+  }
+}
+
+async function hardenDatabaseExposure() {
+  const tables = [
+    "app_settings", "clients", "suppliers", "inventory_items", "service_orders", "order_parts",
+    "purchases", "purchase_items", "payments", "appointments", "warranty_claims",
+    "inventory_movements", "audit_entries", "order_approvals", "users", "audit_log", "whatsapp_messages"
+  ];
+  for (const table of tables) {
+    await query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+    await query(`
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+          REVOKE ALL ON TABLE ${table} FROM anon;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+          REVOKE ALL ON TABLE ${table} FROM authenticated;
+        END IF;
+      END $$;
+    `);
+  }
 }
 
 async function createProfessionalForeignKeys() {
@@ -200,8 +393,14 @@ async function createProfessionalForeignKeys() {
     UPDATE purchases p SET supplier_id = NULL WHERE supplier_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = p.supplier_id);
     UPDATE purchases p SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = p.order_id);
     UPDATE payments p SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = p.order_id);
+    UPDATE appointments a SET client_id = NULL WHERE client_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.id = a.client_id);
+    UPDATE appointments a SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = a.order_id);
     UPDATE warranty_claims w SET order_id = NULL WHERE order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM service_orders o WHERE o.id = w.order_id);
     UPDATE inventory_movements m SET item_id = NULL WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory_items i WHERE i.id = m.item_id);
+    UPDATE service_orders o SET quote_supplier_id = NULL WHERE quote_supplier_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.id = o.quote_supplier_id);
+    UPDATE order_parts op SET inventory_id = NULL WHERE inventory_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory_items i WHERE i.id = op.inventory_id);
+    UPDATE order_parts op SET purchase_id = NULL WHERE purchase_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchases p WHERE p.id = op.purchase_id);
+    UPDATE order_parts op SET purchase_item_id = NULL WHERE purchase_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.id = op.purchase_item_id);
 
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_service_orders_client') THEN
@@ -221,6 +420,24 @@ async function createProfessionalForeignKeys() {
       END IF;
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_movements_item') THEN
         ALTER TABLE inventory_movements ADD CONSTRAINT fk_movements_item FOREIGN KEY (item_id) REFERENCES inventory_items(id) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_quote_supplier') THEN
+        ALTER TABLE service_orders ADD CONSTRAINT fk_orders_quote_supplier FOREIGN KEY (quote_supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_appointments_client') THEN
+        ALTER TABLE appointments ADD CONSTRAINT fk_appointments_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_appointments_order') THEN
+        ALTER TABLE appointments ADD CONSTRAINT fk_appointments_order FOREIGN KEY (order_id) REFERENCES service_orders(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_parts_inventory') THEN
+        ALTER TABLE order_parts ADD CONSTRAINT fk_order_parts_inventory FOREIGN KEY (inventory_id) REFERENCES inventory_items(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_parts_purchase') THEN
+        ALTER TABLE order_parts ADD CONSTRAINT fk_order_parts_purchase FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE SET NULL NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_parts_purchase_item') THEN
+        ALTER TABLE order_parts ADD CONSTRAINT fk_order_parts_purchase_item FOREIGN KEY (purchase_item_id) REFERENCES purchase_items(id) ON DELETE SET NULL NOT VALID;
       END IF;
     END $$;
   `);
@@ -471,6 +688,18 @@ async function createProfessionalSchema() {
       raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS order_approvals (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES service_orders(id) ON DELETE CASCADE,
+      decision TEXT NOT NULL CHECK (decision IN ('Aprobado','Rechazado')),
+      customer_name TEXT NOT NULL,
+      ip_hash TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL DEFAULT now()::text
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_order_approvals_order ON order_approvals (order_id, created_at DESC);
   `);
 }
 
@@ -527,7 +756,38 @@ async function createProfessionalConstraints() {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_folio_active
       ON purchases (lower(folio))
       WHERE archived = FALSE;
+
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_service_orders_status') THEN
+        ALTER TABLE service_orders ADD CONSTRAINT ck_service_orders_status CHECK (status IN ('Recibido','Diagnostico','Esperando pieza','En reparacion','Listo','Entregado','Cancelado')) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_service_orders_priority') THEN
+        ALTER TABLE service_orders ADD CONSTRAINT ck_service_orders_priority CHECK (priority IN ('Baja','Normal','Alta','Urgente')) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_service_orders_approval') THEN
+        ALTER TABLE service_orders ADD CONSTRAINT ck_service_orders_approval CHECK (approval_status IN ('Pendiente','Aprobado','Rechazado')) NOT VALID;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_purchases_status') THEN
+        ALTER TABLE purchases ADD CONSTRAINT ck_purchases_status CHECK (status IN ('Cotizando','Pedido','Recibido','Cancelado')) NOT VALID;
+      END IF;
+    END $$;
+
+    ALTER TABLE service_orders VALIDATE CONSTRAINT ck_service_orders_status;
+    ALTER TABLE service_orders VALIDATE CONSTRAINT ck_service_orders_priority;
+    ALTER TABLE service_orders VALIDATE CONSTRAINT ck_service_orders_approval;
+    ALTER TABLE purchases VALIDATE CONSTRAINT ck_purchases_status;
   `);
+  const foreignKeys = [
+    ["service_orders", "fk_service_orders_client"], ["purchases", "fk_purchases_supplier"],
+    ["purchases", "fk_purchases_order"], ["payments", "fk_payments_order"],
+    ["warranty_claims", "fk_warranties_order"], ["inventory_movements", "fk_movements_item"],
+    ["service_orders", "fk_orders_quote_supplier"], ["appointments", "fk_appointments_client"],
+    ["appointments", "fk_appointments_order"], ["order_parts", "fk_order_parts_inventory"],
+    ["order_parts", "fk_order_parts_purchase"], ["order_parts", "fk_order_parts_purchase_item"]
+  ];
+  for (const [table, constraint] of foreignKeys) {
+    await query(`ALTER TABLE ${table} VALIDATE CONSTRAINT ${constraint}`);
+  }
 }
 
 async function syncNormalizedRecord(type, data, archived = false, createdAt = now(), updatedAt = now()) {
@@ -761,6 +1021,10 @@ async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
       model: existingItem.model || "",
       name: existingItem.name || part,
       category: existingItem.category || "Refacciones",
+      supplierId: purchase.supplierId || existingItem.raw_data?.supplierId || "",
+      quality: item.quality || existingItem.raw_data?.quality || "Por verificar",
+      lot: purchase.folio || purchase.id,
+      supplierWarrantyDays: Math.max(0, asNumber(item.supplierWarrantyDays || existingItem.raw_data?.supplierWarrantyDays || 0)),
       stock: Math.max(0, asNumber(existingItem.stock)) + qty,
       min: Math.max(1, asNumber(existingItem.min_stock || existingItem.raw_data?.min || 1)),
       minStock: Math.max(1, asNumber(existingItem.min_stock || existingItem.raw_data?.minStock || 1)),
@@ -774,6 +1038,11 @@ async function applyReceivedPurchaseEffects(purchase, timestamp = now()) {
       model: "",
       name: part,
       category: "Refacciones",
+      supplierId: purchase.supplierId || "",
+      quality: item.quality || "Por verificar",
+      lot: purchase.folio || purchase.id,
+      supplierWarrantyDays: Math.max(0, asNumber(item.supplierWarrantyDays || 0)),
+      serialNumbers: Array.isArray(item.serialNumbers) ? item.serialNumbers : [],
       stock: qty,
       min: 1,
       minStock: 1,
@@ -978,7 +1247,27 @@ async function prepareRecordForSave(type, requestedId, record) {
     if ((data.approvalStatus || "Pendiente") === "Aprobado" && !data.customerAuthorization) {
       throw businessError("Falta registrar la autorizacion del cliente", "customer_authorization_required", 400);
     }
+    if (["Listo", "Entregado"].includes(data.status)) {
+      const checklist = data.finalChecklist || {};
+      const pendingChecks = pendingQualityChecks(checklist);
+      if (pendingChecks.length) {
+        throw businessError("Completa todas las pruebas funcionales antes de marcar el equipo como listo", "quality_checklist_required", 400);
+      }
+    }
     data.warrantyDays = 90;
+    const previousOrder = await query("SELECT raw_data FROM service_orders WHERE id = $1 LIMIT 1", [recordId]);
+    const previousRaw = rawObject(previousOrder.rows[0]);
+    const incomingPattern = String(data.unlockPattern || "").trim();
+    const previousEncryptedPattern = previousRaw.unlockPatternEncrypted
+      || (previousRaw.unlockPattern ? encryptSensitive(previousRaw.unlockPattern) : "");
+    delete data.unlockPattern;
+    if (["Entregado", "Cancelado"].includes(data.status)) {
+      delete data.unlockPatternEncrypted;
+    } else if (incomingPattern) {
+      data.unlockPatternEncrypted = encryptSensitive(incomingPattern);
+    } else if (previousEncryptedPattern) {
+      data.unlockPatternEncrypted = previousEncryptedPattern;
+    }
     if (data.status === "Entregado") {
       data.deposit = Math.max(0, asNumber(data.total));
       data.paid = true;
@@ -1096,6 +1385,66 @@ function canWriteType(user, type) {
   return user?.role === "technician" && ["client", "order", "appointment", "warrantyClaim", "payment", "purchase"].includes(type);
 }
 
+function canReadType(user, type) {
+  const role = user?.role || "";
+  if (["admin", "manager"].includes(role)) return true;
+  if (role === "technician") {
+    return ["settings", "client", "order", "inventory", "supplier", "appointment", "purchase", "payment", "warrantyClaim", "inventoryMovement"].includes(type);
+  }
+  if (role === "viewer") return ["settings", "order", "inventory", "appointment"].includes(type);
+  return false;
+}
+
+function sanitizeDataForUser(user, type, input) {
+  const data = { ...(input || {}) };
+  delete data.unlockPattern;
+  delete data.unlockPatternEncrypted;
+  if (["technician", "viewer"].includes(user?.role)) {
+    if (type === "inventory") {
+      delete data.cost;
+      delete data.subdealerPrice;
+    }
+    if (type === "order") {
+      data.suppliedParts = (data.suppliedParts || []).map((part) => {
+        const safePart = { ...part };
+        delete safePart.cost;
+        delete safePart.totalCost;
+        return safePart;
+      });
+      delete data.internalCost;
+      delete data.laborCost;
+    }
+    if (type === "purchase") {
+      delete data.cost;
+      data.items = (data.items || []).map((item) => {
+        const safeItem = { ...item };
+        delete safeItem.cost;
+        return safeItem;
+      });
+    }
+    if (type === "supplier") delete data.notes;
+  }
+  if (user?.role === "viewer") {
+    delete data.phone;
+    delete data.email;
+    delete data.address;
+    delete data.total;
+    delete data.deposit;
+  }
+  return data;
+}
+
+function sanitizeEnvelopeForUser(user, type, row) {
+  return { ...row, data: sanitizeDataForUser(user, type, row.data || row) };
+}
+
+function canAccessOrderSecret(user, order) {
+  if (["admin", "manager"].includes(user?.role)) return true;
+  if (user?.role !== "technician") return false;
+  const raw = rawObject(order);
+  return raw.technicianId === user.sub || normalizeSearchKey(order.technician) === normalizeSearchKey(user.name);
+}
+
 async function lockTypedRecord(type, recordId) {
   const table = tableForType(type);
   if (!table || !recordId) return null;
@@ -1131,12 +1480,26 @@ function createRateLimiter({ windowMs, max, message, failuresOnly = false }) {
 }
 
 const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10, failuresOnly: true, message: "Demasiados intentos. Espera 15 minutos e intenta de nuevo." });
-const publicPortalLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 60, message: "Demasiadas consultas. Espera un minuto." });
+const publicPortalLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 15, message: "Demasiadas consultas. Espera un minuto." });
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.set("trust proxy", 1);
-app.use(cors({ origin: process.env.CORS_ORIGIN?.split(",") || true }));
-app.use(express.json({ limit: "12mb" }));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    const developmentOrigin = process.env.NODE_ENV !== "production" && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    if (productionCorsOrigins.includes(origin) || developmentOrigin) return callback(null, true);
+    return callback(businessError("Origen no permitido", "cors_origin_denied", 403));
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Authorization", "Content-Type", "Cache-Control", "Pragma"]
+}));
+app.use(express.json({
+  limit: "12mb",
+  verify(req, _res, buffer) {
+    if (req.originalUrl?.startsWith("/api/whatsapp/webhook")) req.rawBody = Buffer.from(buffer);
+  }
+}));
 app.use("/api", (_req, res, next) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.set("Pragma", "no-cache");
@@ -1155,7 +1518,7 @@ app.get(["/", "/health", "/api/health"], (_req, res) => res.json({
   at: now()
 }));
 
-app.get("/api/stability", async (_req, res) => {
+app.get("/api/stability", requireAuth, requireRole("admin", "manager"), async (_req, res) => {
   const report = await getStabilityReport();
   const purchaseSource = await getPurchaseSourceReport();
   res.json({
@@ -1193,32 +1556,32 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
   const lookup = String(req.params.folio || "").trim();
   const folio = lookup.toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
+  if (!trackingCode) {
+    return res.status(400).json({ error: "Codigo de seguimiento requerido", code: "tracking_code_required" });
+  }
   const digits = lookup.replace(/\D/g, "");
   const looksLikePhone = digits.length >= 8 && !/[a-z]/i.test(lookup);
-  const normalizedResult = trackingCode
+  const normalizedResult = looksLikePhone
     ? await query(
-        "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
-        [folio, trackingCode]
+        `SELECT o.*, c.name AS client_name
+         FROM service_orders o
+         LEFT JOIN clients c ON c.id = o.client_id
+         WHERE o.archived = FALSE
+           AND right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 10) = $1
+           AND o.tracking_code = $2
+         ORDER BY o.updated_at DESC LIMIT 1`,
+        [digits.slice(-10), trackingCode]
       )
-    : looksLikePhone
-      ? await query(
-          `SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email
-           FROM service_orders o
-           LEFT JOIN clients c ON c.id = o.client_id
-           WHERE o.archived = FALSE
-             AND right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 10) = $1
-           ORDER BY o.updated_at DESC LIMIT 1`,
-          [digits.slice(-10)]
-        )
     : await query(
-        "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 ORDER BY o.updated_at DESC LIMIT 1",
-        [folio]
+        "SELECT o.*, c.name AS client_name FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
+        [folio, trackingCode]
       );
   if (normalizedResult.rows[0]) {
     const row = normalizedResult.rows[0];
     const order = row.raw_data || {};
     const orderParts = await query("SELECT part_name, qty FROM order_parts WHERE order_id = $1 ORDER BY created_at ASC", [row.id]);
     const publicParts = orderParts.rows.map((part) => ({ part: part.part_name || "Refaccion", qty: Math.max(1, asNumber(part.qty || 1)) }));
+    const publicEvidence = await materializeEvidencePhotos(order.statusEvidencePhotos || row.status_evidence_photos || [], 600);
     return res.json({
       ok: true,
       order: {
@@ -1230,7 +1593,6 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
         approvalStatus: row.approval_status || "Pendiente",
         device: row.device,
         technician: row.technician || order.technician || "",
-        serial: row.serial || order.serial || "",
         issue: row.issue,
         notes: row.notes,
         physicalState: row.physical_state,
@@ -1240,24 +1602,85 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
         total: row.total,
         deposit: row.deposit,
         paid: row.paid,
-        trackingCode: row.tracking_code,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         statusHistory: order.statusHistory || row.status_history || [],
-        statusEvidencePhotos: order.statusEvidencePhotos || row.status_evidence_photos || [],
+        statusEvidencePhotos: publicEvidence,
         suppliedParts: publicParts
       },
       client: {
-        name: row.client_name || "Cliente",
-        phone: row.client_phone || "",
-        email: row.client_email || ""
+        name: row.client_name || "Cliente"
       }
     });
   }
   res.status(404).json({ error: "Orden no encontrada" });
 });
 
+app.post("/api/public/orders/:lookup/approval", publicPortalLimiter, async (req, res) => {
+  const lookup = String(req.params.lookup || "").trim();
+  const trackingCode = String(req.body?.code || "").trim();
+  const decision = String(req.body?.decision || "");
+  const customerName = String(req.body?.customerName || "").trim().slice(0, 120);
+  if (!trackingCode) return res.status(400).json({ error: "Codigo de seguimiento requerido" });
+  if (!["Aprobado", "Rechazado"].includes(decision)) return res.status(400).json({ error: "Decision invalida" });
+  if (customerName.length < 3) return res.status(400).json({ error: "Escribe el nombre de quien autoriza" });
+  const digits = lookup.replace(/\D/g, "");
+  const looksLikePhone = digits.length >= 8 && !/[a-z]/i.test(lookup);
+  try {
+    const result = await withTransaction(async () => {
+      const orderResult = looksLikePhone
+        ? await query(
+            `SELECT o.* FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id
+             WHERE o.archived = FALSE AND right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 10) = $1
+               AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1 FOR UPDATE OF o`,
+            [digits.slice(-10), trackingCode]
+          )
+        : await query(
+            "SELECT * FROM service_orders WHERE archived = FALSE AND lower(folio) = lower($1) AND tracking_code = $2 LIMIT 1 FOR UPDATE",
+            [lookup, trackingCode]
+          );
+      const order = orderResult.rows[0];
+      if (!order) throw businessError("Orden o codigo no validos", "order_not_found", 404);
+      if (["Entregado", "Cancelado"].includes(order.status)) throw businessError("Esta orden ya no admite autorizaciones", "approval_closed", 409);
+      const timestamp = now();
+      const raw = rawObject(order);
+      const authorizationMeta = {
+        decision,
+        customerName,
+        at: timestamp,
+        channel: "portal_cliente"
+      };
+      const nextRaw = {
+        ...raw,
+        approvalStatus: decision,
+        approved: decision === "Aprobado",
+        customerAuthorization: decision === "Aprobado",
+        authorizationMeta,
+        updatedAt: timestamp
+      };
+      await query(
+        "UPDATE service_orders SET approval_status = $1, approved = $2, raw_data = $3, updated_at = $4 WHERE id = $5",
+        [decision, decision === "Aprobado", JSON.stringify(nextRaw), timestamp, order.id]
+      );
+      const ipHash = createHash("sha256").update(`${req.ip}|${sensitiveDataSecret}`).digest("hex");
+      await query(
+        "INSERT INTO order_approvals (id,order_id,decision,customer_name,ip_hash,user_agent,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [id("apr"), order.id, decision, customerName, ipHash, String(req.headers["user-agent"] || "").slice(0, 300), timestamp]
+      );
+      await audit(null, "customer_quote_decision", "order", order.id, `${decision} por ${customerName}`);
+      return { orderId: order.id, folio: order.folio, decision, at: timestamp };
+    });
+    res.status(201).json({ ok: true, ...result });
+  } catch (error) {
+    res.status(error?.status || 500).json({ error: error?.message || "No se pudo registrar la autorizacion", code: error?.code || "approval_failed" });
+  }
+});
+
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.user }));
+
+app.get("/api/state/revision", requireAuth, async (_req, res) => {
+  res.json({ revision: await getStateRevision(), at: now() });
+});
 
 app.get("/api/state", requireAuth, async (req, res) => {
   const definitions = [
@@ -1272,24 +1695,25 @@ app.get("/api/state", requireAuth, async (req, res) => {
     ["inventoryMovements", "inventoryMovement"],
     ["warrantyClaims", "warrantyClaim"],
     ["auditLog", "auditEntry"]
-  ];
+  ].filter(([, type]) => canReadType(req.user, type));
   const loaded = await Promise.all(definitions.map(async ([stateKey, type]) => [stateKey, type, await getNormalizedRecordsForType(type, false)]));
   const payload = {};
   for (const [stateKey, type, rows] of loaded) {
+    const sanitizedRows = rows.map((row) => sanitizeEnvelopeForUser(req.user, type, row));
     payload[stateKey] = type === "settings"
-      ? rows[0]?.data || null
-      : rows.map((row) => row.data || row);
+      ? sanitizedRows[0]?.data || null
+      : sanitizedRows.map((row) => row.data || row);
   }
-  const technicians = await query(
-    "SELECT id, name, email FROM users WHERE active = TRUE AND role = 'technician' ORDER BY lower(name), lower(email)"
-  );
+  const technicians = req.user?.role === "technician"
+    ? await query("SELECT id, name, email FROM users WHERE id = $1 AND active = TRUE AND role = 'technician'", [req.user.sub])
+    : await query("SELECT id, name, email FROM users WHERE active = TRUE AND role = 'technician' ORDER BY lower(name), lower(email)");
   const canSeeTechnicianEmail = ["admin", "manager"].includes(req.user?.role);
   payload.technicians = technicians.rows.map((row) => ({
     id: row.id,
     name: row.name,
     ...(canSeeTechnicianEmail ? { email: row.email } : {})
   }));
-  res.json({ ok: true, at: now(), data: payload });
+  res.json({ ok: true, at: now(), revision: await getStateRevision(), data: payload });
 });
 
 app.post("/api/orders/:id/payments", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
@@ -1336,8 +1760,33 @@ app.post("/api/orders/:id/payments", requireAuth, requireRole("admin", "manager"
 app.get("/api/records/:type", requireAuth, async (req, res) => {
   const { type } = req.params;
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
+  if (!canReadType(req.user, type)) return res.status(403).json({ error: "Tu rol no puede consultar este modulo" });
   const includeArchived = req.query.archived === "1";
-  res.json(await getNormalizedRecordsForType(type, includeArchived));
+  const rows = await getNormalizedRecordsForType(type, includeArchived);
+  res.json(rows.map((row) => sanitizeEnvelopeForUser(req.user, type, row)));
+});
+
+app.get("/api/orders/:id/unlock", requireAuth, async (req, res) => {
+  const result = await query("SELECT id, folio, technician, raw_data FROM service_orders WHERE id = $1 AND archived = FALSE LIMIT 1", [req.params.id]);
+  const order = result.rows[0];
+  if (!order) return res.status(404).json({ error: "Orden no encontrada" });
+  if (!canAccessOrderSecret(req.user, order)) return res.status(403).json({ error: "No tienes permiso para consultar esta clave" });
+  const raw = rawObject(order);
+  const pattern = decryptSensitive(raw.unlockPatternEncrypted)
+    || String(raw.unlockPattern || "");
+  await audit(req.user.sub, "unlock_pattern_view", "order", order.id, order.folio || "");
+  res.json({ pattern, patternSize: Number(raw.patternSize || 3) });
+});
+
+app.get("/api/orders/:id/evidence", requireAuth, async (req, res) => {
+  const result = await query("SELECT id, folio, technician, status_evidence_photos, raw_data FROM service_orders WHERE id = $1 AND archived = FALSE LIMIT 1", [req.params.id]);
+  const order = result.rows[0];
+  if (!order) return res.status(404).json({ error: "Orden no encontrada" });
+  if (!canAccessOrderSecret(req.user, order)) return res.status(403).json({ error: "No tienes permiso para consultar esta evidencia" });
+  const raw = rawObject(order);
+  const photos = await materializeEvidencePhotos(raw.statusEvidencePhotos || order.status_evidence_photos || [], 900);
+  await audit(req.user.sub, "evidence_view", "order", order.id, order.folio || "");
+  res.json({ photos });
 });
 
 app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
@@ -1345,6 +1794,13 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
   if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
   if (!canWriteType(req.user, type)) return res.status(403).json({ error: "Tu rol no puede modificar este modulo" });
   const record = req.body?.data || {};
+  if (req.user?.role === "technician" && type === "order") {
+    if (record.technicianId && record.technicianId !== req.user.sub) {
+      return res.status(403).json({ error: "Solo puedes asignarte ordenes a tu propio usuario" });
+    }
+    record.technicianId = req.user.sub;
+    record.technician = req.user.name;
+  }
   if (req.user?.role === "technician" && type === "purchase") {
     const hasCost = asNumber(record.cost) > 0 || (record.items || []).some((item) => asNumber(item.cost) > 0);
     if ((record.status || "Cotizando") !== "Cotizando" || hasCost) {
@@ -1583,23 +2039,17 @@ async function getAnalyticsReport() {
         SELECT order_id, COALESCE(SUM(total_cost), 0) AS parts_cost
         FROM order_parts
         GROUP BY order_id
-      ),
-      payment_totals AS (
-        SELECT order_id, COALESCE(SUM(amount), 0) AS payments
-        FROM payments
-        WHERE archived = FALSE
-        GROUP BY order_id
       )
       SELECT
-        COALESCE(SUM(o.total), 0) AS revenue,
-        COALESCE(SUM(COALESCE(c.parts_cost, 0)), 0) AS parts_cost,
+        COALESCE(SUM(o.total) FILTER (WHERE o.status = 'Entregado'), 0) AS revenue,
+        COALESCE(SUM(o.total) FILTER (WHERE o.status NOT IN ('Entregado','Cancelado')), 0) AS work_in_progress_value,
+        COALESCE(SUM(COALESCE(c.parts_cost, 0)) FILTER (WHERE o.status = 'Entregado'), 0) AS parts_cost,
         0::numeric AS labor_cost,
-        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0)), 0) AS gross_margin,
-        COALESCE(SUM(o.deposit), 0) AS collected,
-        COALESCE(SUM(GREATEST(o.total - GREATEST(o.deposit, COALESCE(p.payments, 0)), 0)), 0) AS receivables
+        COALESCE(SUM(o.total - COALESCE(c.parts_cost, 0)) FILTER (WHERE o.status = 'Entregado'), 0) AS gross_margin,
+        COALESCE(SUM(LEAST(o.total, o.deposit)), 0) AS collected,
+        COALESCE(SUM(GREATEST(o.total - o.deposit, 0)), 0) AS receivables
       FROM service_orders o
       LEFT JOIN order_costs c ON c.order_id = o.id
-      LEFT JOIN payment_totals p ON p.order_id = o.id
       WHERE o.archived = FALSE AND o.status <> 'Cancelado'
     `),
     query(`
@@ -1610,10 +2060,16 @@ async function getAnalyticsReport() {
       FROM inventory_items
     `),
     query(`
+      WITH item_totals AS (
+        SELECT purchase_id, SUM(qty * cost) AS amount
+        FROM purchase_items
+        GROUP BY purchase_id
+      )
       SELECT
-        COUNT(*) FILTER (WHERE archived = FALSE AND status NOT IN ('Recibido','Cancelado'))::int AS pending_purchases,
-        COALESCE(SUM(qty * cost) FILTER (WHERE archived = FALSE AND status NOT IN ('Recibido','Cancelado')), 0) AS pending_purchase_value
-      FROM purchases
+        COUNT(*) FILTER (WHERE p.archived = FALSE AND p.status NOT IN ('Recibido','Cancelado'))::int AS pending_purchases,
+        COALESCE(SUM(COALESCE(i.amount, p.qty * p.cost)) FILTER (WHERE p.archived = FALSE AND p.status NOT IN ('Recibido','Cancelado')), 0) AS pending_purchase_value
+      FROM purchases p
+      LEFT JOIN item_totals i ON i.purchase_id = p.id
     `),
     query(`
       SELECT
@@ -1643,10 +2099,10 @@ async function getAnalyticsReport() {
       ORDER BY total DESC
     `),
     query(`
-      SELECT substring(created_at, 1, 7) AS month, COALESCE(SUM(total), 0) AS revenue, COUNT(*)::int AS orders
+      SELECT substring(COALESCE(completed_at, updated_at), 1, 7) AS month, COALESCE(SUM(total), 0) AS revenue, COUNT(*)::int AS orders
       FROM service_orders
-      WHERE archived = FALSE AND status <> 'Cancelado'
-      GROUP BY substring(created_at, 1, 7)
+      WHERE archived = FALSE AND status = 'Entregado'
+      GROUP BY substring(COALESCE(completed_at, updated_at), 1, 7)
       ORDER BY month DESC
       LIMIT 12
     `)
@@ -1660,6 +2116,7 @@ async function getAnalyticsReport() {
     kpis: {
       ...(orderMetrics.rows[0] || {}),
       revenue: asNumber(finance.revenue),
+      workInProgressValue: asNumber(finance.work_in_progress_value),
       partsCost: asNumber(finance.parts_cost),
       laborCost: asNumber(finance.labor_cost),
       grossMargin: asNumber(finance.gross_margin),
@@ -1954,7 +2411,26 @@ app.post("/api/users/:id/deactivate", requireAuth, requireRole("admin"), async (
 });
 
 app.post("/api/files/base64", requireAuth, requireRole("admin", "manager", "technician"), (_req, res) => {
-  res.status(501).json({ error: "Usa evidencia embebida en ordenes o configura storage externo." });
+  res.status(410).json({ error: "Carga evidencias mediante /api/files/evidence; el almacenamiento base64 fue retirado." });
+});
+
+app.post("/api/files/evidence", requireAuth, requireRole("admin", "manager", "technician"), async (req, res) => {
+  if (!storageConfigured()) {
+    return res.status(503).json({
+      error: "Storage privado no configurado",
+      code: "storage_not_configured",
+      required: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+    });
+  }
+  const orderId = String(req.body?.orderId || "").trim();
+  const files = Array.isArray(req.body?.files) ? req.body.files : [];
+  if (!orderId) return res.status(400).json({ error: "orderId requerido" });
+  if (!files.length || files.length > 6) return res.status(400).json({ error: "Adjunta entre 1 y 6 fotografias por carga" });
+  await ensureEvidenceBucket();
+  const photos = [];
+  for (const file of files) photos.push(await uploadEvidencePhoto(orderId, file));
+  await audit(req.user.sub, "evidence_upload", "order", orderId, `${photos.length} archivo(s)`);
+  res.status(201).json({ photos });
 });
 
 app.get("/api/whatsapp/webhook", (req, res) => {
@@ -1964,6 +2440,15 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 });
 
 app.post("/api/whatsapp/webhook", async (req, res) => {
+  const appSecret = process.env.WHATSAPP_APP_SECRET || "";
+  const signature = String(req.headers["x-hub-signature-256"] || "");
+  if (!appSecret) return res.status(503).json({ error: "WHATSAPP_APP_SECRET no configurado" });
+  const expectedSignature = `sha256=${createHmac("sha256", appSecret).update(req.rawBody || Buffer.alloc(0)).digest("hex")}`;
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (signatureBuffer.length !== expectedBuffer.length || !timingSafeEqual(signatureBuffer, expectedBuffer)) {
+    return res.status(401).json({ error: "Firma de webhook invalida" });
+  }
   const payload = req.body || {};
   const messages = payload.entry?.flatMap((entry) => entry.changes || [])
     .flatMap((change) => change.value?.messages || []) || [];
@@ -2027,10 +2512,11 @@ app.post("/api/whatsapp/send", requireAuth, requireRole("admin", "manager", "tec
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(500).json({ error: "Error interno" });
+  res.status(error?.status || 500).json({ error: error?.status ? error.message : "Error interno", code: error?.code || "internal_error" });
 });
 
 await initDb();
+ensureEvidenceBucket().catch((error) => console.warn(`Storage de evidencias pendiente: ${error.message}`));
 
 app.listen(port, () => {
   console.log(`PCFix backend Postgres listo en puerto ${port}`);

@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-compras-visual-20260716-04";
+const PCFIX_FRONTEND_VERSION = "pcfix-seguridad-calidad-20260716-05";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -46,6 +46,17 @@ const commonFailures = [
   { label: "Teclado", text: "Teclas no responden o touchpad falla; revisar flex, teclado y humedad." },
   { label: "No enciende", text: "Equipo no enciende; revisar bateria, fuente, placa, boton de encendido y consumo." }
 ];
+const qualityChecks = [
+  { key: "power", label: "Encendido" },
+  { key: "charge", label: "Carga" },
+  { key: "display", label: "Imagen" },
+  { key: "touch", label: "Tactil" },
+  { key: "audio", label: "Audio y microfono" },
+  { key: "cameras", label: "Camaras" },
+  { key: "biometrics", label: "Biometricos" },
+  { key: "connectivity", label: "WiFi, Bluetooth y red" }
+];
+const qualityStates = ["No probado", "Correcto", "Falla", "No aplica"];
 
 const defaultState = {
   settings: {
@@ -80,6 +91,7 @@ let currentAdminReport = null;
 let currentPortalOrder = null;
 let currentPortalClient = null;
 let lastDatabaseLoadAt = 0;
+let lastStateRevision = "";
 let pendingSuggestedPurchase = null;
 let lastMissingPartPromptKey = "";
 
@@ -127,6 +139,7 @@ function isPublicPortalRequest() {
 function enablePublicPortalMode() {
   const params = new URLSearchParams(window.location.search);
   const lookup = params.get("folio") || params.get("orden") || params.get("whatsapp") || params.get("q") || "";
+  const code = params.get("code") || "";
   document.body.classList.add("public-portal-mode");
   $("loginScreen").classList.add("hidden");
   $("app").classList.remove("hidden");
@@ -136,6 +149,7 @@ function enablePublicPortalMode() {
   $("viewTitle").textContent = "Seguimiento PCFix";
   $("viewSubtitle").textContent = "Consulta el avance de tu reparacion.";
   $("portalFolio").value = lookup;
+  $("portalCode").value = code;
   $("portalResult").innerHTML = portalWelcome();
   if (lookup) $("portalForm").requestSubmit();
 }
@@ -266,7 +280,7 @@ function startLiveRefresh() {
     if (!session.token || busy || document.hidden) return;
     if (document.querySelector("form:focus-within") || !$("orderForm").classList.contains("hidden")) return;
     if (Date.now() - lastDatabaseLoadAt < 30000) return;
-    loadStateFromDb();
+    refreshStateIfChanged().catch(() => {});
   };
   window.addEventListener("focus", refreshWhenSafe);
   document.addEventListener("visibilitychange", refreshWhenSafe);
@@ -347,6 +361,7 @@ async function loadStateFromDb(manual = false) {
       ...data,
       settings: { ...clone(defaultState.settings), ...(data.settings || {}) }
     };
+    lastStateRevision = payload.revision || lastStateRevision;
     lastDatabaseLoadAt = Date.now();
     render();
     $("connectionLabel").textContent = `BD actualizada ${new Date().toLocaleTimeString("es-MX")}`;
@@ -361,6 +376,15 @@ async function loadStateFromDb(manual = false) {
   } finally {
     setBusy(false);
   }
+}
+
+async function refreshStateIfChanged() {
+  if (!session.token || busy) return false;
+  const payload = await api(`/api/state/revision?t=${Date.now()}`);
+  if (!lastStateRevision || payload.revision !== lastStateRevision) return loadStateFromDb();
+  lastDatabaseLoadAt = Date.now();
+  $("connectionLabel").textContent = `BD verificada ${new Date().toLocaleTimeString("es-MX")}`;
+  return true;
 }
 
 async function saveRecord(type, data) {
@@ -403,7 +427,7 @@ function showView(view) {
   };
   $("viewTitle").textContent = names[view][0];
   $("viewSubtitle").textContent = names[view][1];
-  loadStateFromDb();
+  refreshStateIfChanged().catch(() => {});
 }
 
 function render() {
@@ -432,9 +456,10 @@ function renderDashboard() {
   const deliveredOrders = orders.filter((o) => o.status === "Entregado");
   const lowStock = inventory.filter((i) => Number(i.stock || 0) <= Number(i.min || i.minStock || 1));
   const overdueOrders = activeOrders.filter(isOrderOverdue);
-  const revenue = billableOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const revenue = deliveredOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const collected = billableOrders.reduce((sum, order) => sum + Math.min(Number(order.total || 0), getPaid(order)), 0);
   const warrantyCost = active(state.warrantyClaims).reduce((sum, claim) => sum + Number(claim.cost || 0), 0);
-  const cost = billableOrders.reduce((sum, order) => sum + getOrderInternalCost(order), 0) + warrantyCost;
+  const cost = deliveredOrders.reduce((sum, order) => sum + getOrderInternalCost(order), 0) + warrantyCost;
   const receivables = billableOrders.reduce((sum, o) => sum + getBalance(o), 0);
   const margin = revenue ? Math.round(((revenue - cost) / revenue) * 100) : 0;
   const cycleDays = averageCycleDays(deliveredOrders);
@@ -443,6 +468,7 @@ function renderDashboard() {
   $("metricPurchases").textContent = purchases.length;
   $("metricLowStock").textContent = lowStock.length;
   $("metricRevenue").textContent = money.format(revenue);
+  $("metricCollected").textContent = money.format(collected);
   $("metricMargin").textContent = `${margin}%`;
   $("metricOverdue").textContent = overdueOrders.length;
   $("metricCycle").textContent = `${cycleDays.toFixed(1)} dias`;
@@ -450,7 +476,7 @@ function renderDashboard() {
   renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost, overdueOrders });
   renderStatusChart(orders);
   renderStockRisk(lowStock);
-  renderExecutiveCharts({ orders, purchases, revenue, cost, receivables });
+  renderExecutiveCharts({ orders, purchases, revenue, collected, cost, receivables });
 }
 
 function renderDecisionInsights({ activeOrders, lowStock, purchases, revenue, cost, overdueOrders }) {
@@ -524,7 +550,7 @@ function renderStockRisk(items) {
   `).join("") || empty("Sin stock bajo");
 }
 
-function renderExecutiveCharts({ orders, purchases, revenue, cost, receivables }) {
+function renderExecutiveCharts({ orders, purchases, revenue, collected, cost, receivables }) {
   const monthly = groupByMonth(orders);
   const serviceMix = groupServices(orders);
   const profit = Math.max(0, revenue - cost);
@@ -537,7 +563,7 @@ function renderExecutiveCharts({ orders, purchases, revenue, cost, receivables }
     { label: "Margen", amount: profit }
   ], "amount", (item) => item.label, (item) => money.format(item.amount));
   $("receivableChart").innerHTML = miniBars([
-    { label: "Cobrado", amount: Math.max(0, revenue - receivables) },
+    { label: "Cobrado", amount: collected },
     { label: "Pendiente", amount: receivables }
   ], "amount", (item) => item.label, (item) => money.format(item.amount));
 }
@@ -556,8 +582,8 @@ function miniBars(rows, field, labelFn, valueFn) {
 
 function groupByMonth(orders) {
   const map = new Map();
-  orders.filter((o) => o.status !== "Cancelado").forEach((order) => {
-    const key = String(order.createdAt || order.created_at || now()).slice(0, 7);
+  orders.filter((o) => o.status === "Entregado").forEach((order) => {
+    const key = String(order.completedAt || order.updatedAt || order.updated_at || now()).slice(0, 7);
     const row = map.get(key) || { label: key, amount: 0, total: 0 };
     row.amount += Number(order.total || 0);
     row.total += 1;
@@ -581,26 +607,43 @@ function groupServices(orders) {
 function renderClients() {
   const rows = sortByName(active(state.clients).filter((c) => matches([c.name, c.phone, c.email, c.address])));
   $("clientCount").textContent = rows.length;
-  $("clientList").innerHTML = rows.map((c) => card(`
+  $("clientList").innerHTML = rows.map((c) => {
+    const clientOrders = active(state.orders).filter((order) => order.clientId === c.id);
+    const devices = [...new Set(clientOrders.map((order) => order.device).filter(Boolean))].slice(0, 4);
+    return card(`
     <strong>${escapeHtml(c.name)}</strong><span>${escapeHtml(c.phone || "")}</span>
     <small>${escapeHtml(c.email || "")} ${escapeHtml(c.address || "")}</small>
+    <div class="client-history-line"><b>${clientOrders.length} servicio(s)</b><span>${clientOrders.filter((order) => order.status === "Entregado").length} entregado(s)</span></div>
+    ${devices.length ? `<div class="mini-chip-row">${devices.map((device) => `<span>${escapeHtml(device)}</span>`).join("")}</div>` : ""}
     <div class="record-actions">
       <button onclick="editClient('${c.id}')" class="btn ghost">Editar</button>
       <button onclick="removeRecord('client','${c.id}')" class="btn danger">Archivar</button>
-    </div>`)).join("") || empty("Sin clientes en BD");
+    </div>`);
+  }).join("") || empty("Sin clientes en BD");
 }
 
 function renderSuppliers() {
   const rows = active(state.suppliers).filter((s) => matches([s.name, s.contact, s.phone, s.category]));
   $("supplierCount").textContent = rows.length;
-  $("supplierList").innerHTML = rows.map((s) => card(`
+  $("supplierList").innerHTML = rows.map((s) => {
+    const supplierPurchases = active(state.purchases).filter((purchase) => purchase.supplierId === s.id);
+    const received = supplierPurchases.filter((purchase) => purchase.status === "Recibido" && purchase.receivedAt);
+    const leadTimes = received.map((purchase) => {
+      const start = new Date(purchase.createdAt || purchase.created_at || "").getTime();
+      const end = new Date(purchase.receivedAt || "").getTime();
+      return Number.isFinite(start) && Number.isFinite(end) && end >= start ? (end - start) / 86400000 : null;
+    }).filter((value) => value !== null);
+    const averageLead = leadTimes.length ? leadTimes.reduce((sum, value) => sum + value, 0) / leadTimes.length : 0;
+    return card(`
     <strong>${escapeHtml(s.name)}</strong><span>${escapeHtml(s.phone || "")}</span>
     <small>${escapeHtml(s.contact || "")} ${escapeHtml(s.category || "")}</small>
+    <div class="client-history-line"><b>${supplierPurchases.length} compra(s)</b><span>${received.length ? `${averageLead.toFixed(1)} dias promedio` : "Sin recepciones medidas"}</span></div>
     <div class="record-actions">
       <button onclick="editSupplier('${s.id}')" class="btn ghost">Editar</button>
       <a class="btn ghost" target="_blank" rel="noreferrer" href="${waUrl(s.phone, "Hola, solicito cotizacion y disponibilidad de refacciones.")}">WhatsApp</a>
       <button onclick="removeRecord('supplier','${s.id}')" class="btn danger">Archivar</button>
-    </div>`)).join("") || empty("Sin proveedores en BD");
+    </div>`);
+  }).join("") || empty("Sin proveedores en BD");
 }
 
 function renderInventory() {
@@ -609,6 +652,7 @@ function renderInventory() {
   $("inventoryList").innerHTML = rows.map((i) => card(`
     <strong>${escapeHtml(displayItem(i))}</strong><span>${escapeHtml(i.category || "")}</span>
     <small>${i.sku ? `SKU ${escapeHtml(i.sku)} | ` : ""}${i.location ? `Ubicacion ${escapeHtml(i.location)} | ` : ""}Stock ${Number(i.stock || 0)} | Min ${Number(i.min || i.minStock || 1)} | Costo ${money.format(Number(i.cost || 0))} | Sub ${money.format(getSubdealer(i))}</small>
+    <div class="client-history-line"><b>${escapeHtml(i.quality || "Calidad no registrada")}</b><span>${(i.serialNumbers || []).length} serie(s) | ${i.supplierWarrantyDays || 0} dias proveedor</span></div>
     <div class="record-actions">
       <button onclick="editInventory('${i.id}')" class="btn ghost">Editar</button>
       <button onclick="removeRecord('inventory','${i.id}')" class="btn danger">Archivar</button>
@@ -633,6 +677,7 @@ function orderCard(o) {
   const overdue = isOrderOverdue(o);
   const promisedLabel = o.promisedAt ? formatDateTime(o.promisedAt) : "Sin fecha prometida";
   const internalCost = getOrderInternalCost(o);
+  const quality = qualitySummary(o.finalChecklist || {});
   return card(`
     <div class="order-card-head">
       <div>
@@ -642,7 +687,7 @@ function orderCard(o) {
       <b class="status-badge ${statusClass(o.status)}">${escapeHtml(o.status || "Sin estatus")}</b>
     </div>
     <div class="sla-line ${overdue ? "overdue" : ""}"><strong>${overdue ? "Promesa vencida" : "Entrega"}</strong><span>${escapeHtml(promisedLabel)}</span></div>
-    <small>Total ${money.format(Number(o.total || 0))} | Costo refacciones ${money.format(internalCost)} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount} | Refacciones ${parts.length}</small>
+    <small>Total ${money.format(Number(o.total || 0))} | Costo refacciones ${money.format(internalCost)} | Saldo ${money.format(getBalance(o))} | Garantia ${Number(o.warrantyDays || 90)} dias | Evidencia ${evidenceCount} | Refacciones ${parts.length} | Pruebas ${quality.tested}/${quality.total}</small>
     ${parts.length ? `<div class="mini-chip-row">${parts.slice(0, 4).map((part) => `<span>${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}</span>`).join("")}</div>` : ""}
     <div class="status-inline">
       <span>Cambiar estatus</span>
@@ -655,6 +700,7 @@ function orderCard(o) {
       <button onclick="sendStatusWhatsApp('${o.id}')" class="btn ghost">Avisar estatus</button>
       <button onclick="sendTrackingWhatsApp('${o.id}')" class="btn ghost">Enviar seguimiento</button>
       <button onclick="printOrderById('${o.id}')" class="btn ghost">Comprobante PDF</button>
+      <button onclick="printOrderLabel('${o.id}')" class="btn ghost">Etiqueta</button>
       ${delivered ? `<button onclick="sendDeliveryWhatsApp('${o.id}')" class="btn ghost">Recomendacion</button>` : `<button onclick="changeOrderStatus('${o.id}', 'Entregado')" class="btn primary">Entregar</button>`}
       <button onclick="removeRecord('order','${o.id}')" class="btn danger">Eliminar</button>
     </div>`);
@@ -722,9 +768,12 @@ function renderWarranties() {
   $("warrantyCount").textContent = rows.length;
   $("warrantyList").innerHTML = rows.map((w) => {
     const order = state.orders.find((o) => o.id === w.orderId);
+    const supplier = getSupplier(w.supplierId);
     return card(`
       <strong>${escapeHtml(order?.folio || "Orden sin folio")} | ${escapeHtml(w.status || "")}</strong>
       <span>${escapeHtml(order?.device || "")} | Costo ${money.format(Number(w.cost || 0))}</span>
+      <div class="client-history-line"><b>${escapeHtml(w.rootCause || "Por determinar")}</b><span>${escapeHtml(supplier?.name || "Sin proveedor relacionado")}</span></div>
+      ${w.relatedPart ? `<div class="mini-chip-row"><span>${escapeHtml(w.relatedPart)}</span></div>` : ""}
       <small>${escapeHtml(w.reason || "")}</small>
       ${w.resolution ? `<small>Resolucion: ${escapeHtml(w.resolution)}</small>` : ""}
       <div class="record-actions">
@@ -781,6 +830,7 @@ function renderSelectors() {
   renderOrderPartOptions();
   setSelectOptions("purchaseSupplier", suppliers.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join(""));
   setSelectOptions("suggestedPurchaseSupplier", suppliers.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join(""));
+  setSelectOptions("itemSupplier", `<option value="">Sin proveedor</option>${suppliers.map((supplier) => `<option value="${supplier.id}">${escapeHtml(supplier.name)}</option>`).join("")}`);
   setSelectOptions("purchaseOrder", `<option value="">Sin orden</option>${orders.map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join("")}`);
   const pendingPaymentOrders = orders.filter((order) => order.status !== "Cancelado" && getBalance(order) > 0.001);
   setSelectOptions("paymentOrder", pendingPaymentOrders.length
@@ -792,6 +842,7 @@ function renderSelectors() {
   setSelectOptions("appointmentClient", clients.map((c) => `<option value="${c.id}">${escapeHtml(c.name)} - ${escapeHtml(c.phone || "")}</option>`).join(""));
   setSelectOptions("appointmentOrder", `<option value="">Sin orden</option>${orders.map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join("")}`);
   setSelectOptions("warrantyOrder", orders.map((o) => `<option value="${o.id}">${escapeHtml(o.folio || o.id)} - ${escapeHtml(o.device || "")}</option>`).join(""));
+  setSelectOptions("warrantySupplier", `<option value="">Sin proveedor</option>${suppliers.map((supplier) => `<option value="${supplier.id}">${escapeHtml(supplier.name)}</option>`).join("")}`);
 }
 
 function setSelectOptions(idValue, html) {
@@ -857,6 +908,11 @@ async function saveInventory(event) {
     model: $("itemModel").value.trim(),
     name: [$("itemBrand").value.trim(), $("itemModel").value.trim()].filter(Boolean).join(" "),
     category: $("itemCategory").value.trim(),
+    supplierId: $("itemSupplier").value,
+    quality: $("itemQuality").value,
+    lot: $("itemLot").value.trim(),
+    supplierWarrantyDays: Math.max(0, Number($("itemSupplierWarranty").value || 0)),
+    serialNumbers: $("itemSerials").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
     stock: Number($("itemStock").value || 0),
     min: Math.max(1, Number($("itemMin").value || 1)),
     cost,
@@ -900,6 +956,7 @@ async function saveOrder(event) {
   const total = Number($("orderTotal").value || 0);
   const deposit = status === "Entregado" ? total : Number($("orderDeposit").value || 0);
   const orderId = $("orderId").value || id("ord");
+  const storageFallback = await persistEvidencePhotos(orderId);
   const savedOrder = await saveRecord("order", {
     id: orderId,
     folio: existing?.folio || nextOrderFolio(),
@@ -928,6 +985,8 @@ async function saveOrder(event) {
     warrantyTerms: defaultWarrantyTerms(),
     trackingCode: existing?.trackingCode || randomCode(),
     statusHistory: updateHistory(existing, status),
+    intakeChecklist: readQualityChecklist("intakeChecklist"),
+    finalChecklist: readQualityChecklist("finalChecklist"),
     completedAt: status === "Entregado" ? (existing?.completedAt || now()) : "",
     statusEvidencePhotos: currentEvidencePhotos,
     parts: selectedParts,
@@ -941,7 +1000,9 @@ async function saveOrder(event) {
     pendingSuggestedPurchase = null;
   }
   hideOrderForm();
-  showAlert("Orden guardada en BD.", "ok");
+  showAlert(storageFallback
+    ? "Orden guardada. Configura Storage privado para sacar las fotografias de PostgreSQL."
+    : "Orden y evidencias guardadas de forma segura.", "ok");
 }
 
 async function savePurchase(event) {
@@ -1055,6 +1116,9 @@ async function saveWarranty(event) {
     orderId: $("warrantyOrder").value,
     reason: $("warrantyReason").value.trim(),
     resolution: $("warrantyResolution").value.trim(),
+    rootCause: $("warrantyRootCause").value,
+    supplierId: $("warrantySupplier").value,
+    relatedPart: $("warrantyPart").value.trim(),
     status: $("warrantyStatus").value,
     cost: Number($("warrantyCost").value || 0),
     createdAt: existing?.createdAt || now(),
@@ -1211,6 +1275,11 @@ function editInventory(idValue) {
   $("itemBrand").value = i.brand || "";
   $("itemModel").value = i.model || i.name || "";
   $("itemCategory").value = i.category || "";
+  $("itemSupplier").value = i.supplierId || "";
+  $("itemQuality").value = i.quality || "Compatible";
+  $("itemLot").value = i.lot || "";
+  $("itemSupplierWarranty").value = Number(i.supplierWarrantyDays || 0);
+  $("itemSerials").value = (i.serialNumbers || []).join("\n");
   $("itemStock").value = Number(i.stock || 0);
   $("itemMin").value = Number(i.min || i.minStock || 1);
   $("itemCost").value = Number(i.cost || 0);
@@ -1219,10 +1288,29 @@ function editInventory(idValue) {
   showView("inventory");
 }
 
-function editOrder(idValue) {
+async function editOrder(idValue) {
   const o = state.orders.find((x) => x.id === idValue);
   if (!o) return;
   showOrderForm(o);
+  const [secretResult, evidenceResult] = await Promise.allSettled([
+    api(`/api/orders/${encodeURIComponent(o.id)}/unlock`),
+    api(`/api/orders/${encodeURIComponent(o.id)}/evidence`)
+  ]);
+  if (secretResult.status === "fulfilled") {
+    const secret = secretResult.value;
+    $("orderPattern").value = secret.pattern || "";
+    $("patternSize").value = String(secret.patternSize || 3);
+    renderPatternGrid();
+  } else {
+    $("orderPattern").value = "";
+    renderPatternGrid();
+    const error = secretResult.reason;
+    if (error.status !== 403) showAlert(`No se pudo consultar la clave: ${error.message}`, "error");
+  }
+  if (evidenceResult.status === "fulfilled") {
+    currentEvidencePhotos = evidenceResult.value.photos || [];
+    renderEvidencePreview();
+  }
 }
 
 function editPurchase(idValue) {
@@ -1260,6 +1348,9 @@ function editWarranty(idValue) {
   $("warrantyOrder").value = w.orderId || "";
   $("warrantyReason").value = w.reason || "";
   $("warrantyResolution").value = w.resolution || "";
+  $("warrantyRootCause").value = w.rootCause || "Por determinar";
+  $("warrantySupplier").value = w.supplierId || "";
+  $("warrantyPart").value = w.relatedPart || "";
   $("warrantyStatus").value = w.status || "Abierta";
   $("warrantyCost").value = Number(w.cost || 0);
   showView("warranties");
@@ -1301,6 +1392,7 @@ function showOrderForm(order = null) {
   $("orderQuotePart").value = order?.quotePartName || suggestPartFromDiagnosis(order?.issue || "", order?.device || "");
   $("orderReplacedPartsDisposition").value = order?.replacedPartsDisposition || "Entregar al cliente";
   $("orderCustomerAuthorization").checked = Boolean(order?.customerAuthorization);
+  renderQualityChecklists(order);
   renderPatternGrid();
   renderEvidencePreview();
   renderOrderPartOptions();
@@ -1340,6 +1432,7 @@ function resetForm(kind) {
     $("orderQuotePart").value = "";
     $("orderPattern").value = "";
     renderPatternGrid();
+    renderQualityChecklists();
   }
   if (kind === "purchase") renderPurchaseItems([]);
 }
@@ -1573,17 +1666,77 @@ async function fileToPhoto(file) {
 }
 
 function renderEvidencePreview() {
-  $("evidencePreview").innerHTML = currentEvidencePhotos.map((photo) => `
+  $("evidencePreview").innerHTML = currentEvidencePhotos.filter((photo) => photoSource(photo)).map((photo) => `
     <figure>
-      <img src="${photo.dataUrl}" alt="${escapeHtml(photo.name || "Evidencia")}">
+      <img src="${escapeHtml(photoSource(photo))}" alt="${escapeHtml(photo.name || "Evidencia")}">
       <button class="btn danger" type="button" onclick="removeEvidencePhoto('${photo.id}')">Quitar</button>
     </figure>
   `).join("");
 }
 
+function photoSource(photo = {}) {
+  return photo.url || photo.dataUrl || "";
+}
+
+async function persistEvidencePhotos(orderId) {
+  const inlinePhotos = currentEvidencePhotos.filter((photo) => photo.dataUrl && !photo.path);
+  currentEvidencePhotos = currentEvidencePhotos.map(({ url, ...photo }) => photo);
+  if (!inlinePhotos.length) return false;
+  try {
+    const uploaded = [];
+    for (let index = 0; index < inlinePhotos.length; index += 6) {
+      const result = await api("/api/files/evidence", {
+        method: "POST",
+        body: JSON.stringify({
+          orderId,
+          files: inlinePhotos.slice(index, index + 6).map((photo) => ({ id: photo.id, name: photo.name, type: photo.type, dataUrl: photo.dataUrl }))
+        })
+      });
+      uploaded.push(...(result.photos || []));
+    }
+    const uploadedById = new Map(uploaded.map((photo) => [photo.id, photo]));
+    currentEvidencePhotos = currentEvidencePhotos.map((photo) => uploadedById.get(photo.id) || photo);
+    return false;
+  } catch (error) {
+    if (error.code === "storage_not_configured" || error.status === 503) return true;
+    throw error;
+  }
+}
+
 function removeEvidencePhoto(photoId) {
   currentEvidencePhotos = currentEvidencePhotos.filter((photo) => photo.id !== photoId);
   renderEvidencePreview();
+}
+
+function renderQualityChecklists(order = {}) {
+  renderQualityChecklist("intakeChecklist", order.intakeChecklist || {});
+  renderQualityChecklist("finalChecklist", order.finalChecklist || {});
+}
+
+function renderQualityChecklist(containerId, values = {}) {
+  const container = $(containerId);
+  if (!container) return;
+  container.innerHTML = qualityChecks.map((check) => `
+    <label><span>${escapeHtml(check.label)}</span><select data-quality-key="${check.key}">
+      ${qualityStates.map((stateValue) => `<option ${values[check.key] === stateValue ? "selected" : ""}>${stateValue}</option>`).join("")}
+    </select></label>
+  `).join("");
+}
+
+function readQualityChecklist(containerId) {
+  return Object.fromEntries(Array.from($(containerId)?.querySelectorAll("[data-quality-key]") || [])
+    .map((select) => [select.dataset.qualityKey, select.value]));
+}
+
+function qualitySummary(checklist = {}) {
+  const tested = qualityChecks.filter((check) => !["No probado", "No aplica", undefined].includes(checklist[check.key]));
+  const correct = tested.filter((check) => checklist[check.key] === "Correcto");
+  const failures = tested.filter((check) => checklist[check.key] === "Falla");
+  return { tested: tested.length, correct: correct.length, failures: failures.length, total: qualityChecks.length };
+}
+
+function qualityChecklistHtml(checklist = {}) {
+  return qualityChecks.map((check) => `<span><b>${escapeHtml(check.label)}</b>${escapeHtml(checklist[check.key] || "No probado")}</span>`).join("");
 }
 
 function renderPatternGrid() {
@@ -1683,12 +1836,13 @@ function hydrateSettings() {
 async function searchPortal(event) {
   event.preventDefault();
   const lookup = $("portalFolio").value.trim();
-  if (!lookup) return;
+  const code = $("portalCode").value.trim();
+  if (!lookup || !code) return;
   $("portalResult").innerHTML = empty("Consultando BD...");
   currentPortalOrder = null;
   currentPortalClient = null;
   try {
-    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(lookup)}?t=${Date.now()}`, {
+    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(lookup)}?code=${encodeURIComponent(code)}&t=${Date.now()}`, {
       cache: "no-store",
       headers: { "Cache-Control": "no-store", Pragma: "no-cache" }
     });
@@ -1713,7 +1867,7 @@ function portalWelcome() {
     <div class="portal-premium portal-empty">
       <div class="status-visual received"><div class="pcfix-status-emblem"><span></span><img src="assets/logo-pcfix.png" alt=""></div></div>
       <h2>Consulta tu reparacion</h2>
-      <p>Ingresa tu folio de orden o tu numero de WhatsApp para ver el seguimiento.</p>
+      <p>Ingresa tu folio o WhatsApp junto con el codigo seguro incluido en tu enlace.</p>
     </div>`;
 }
 
@@ -1724,6 +1878,7 @@ function renderPortalOrder(order, client = {}) {
   const history = order.statusHistory || [];
   const canceled = order.status === "Cancelado";
   const statusIndex = repairProgressStatuses.indexOf(order.status);
+  const finalQuality = qualitySummary(order.finalChecklist || {});
   return `
       <div class="portal-premium portal-order-card">
         <div class="portal-hero-premium">
@@ -1755,10 +1910,42 @@ function renderPortalOrder(order, client = {}) {
           <article><strong>Accesorios recibidos</strong><span>${escapeHtml(order.accessories || "Sin accesorios registrados")}</span></article>
           <article><strong>Refacciones utilizadas</strong><span>${parts.length ? parts.map((part) => `${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}`).join(", ") : "Sin refacciones registradas"}</span></article>
         </div>
+        ${delivered ? `<section class="quality-certificate"><div><span class="portal-eyebrow">Certificado de funcionamiento</span><h3>${finalQuality.correct} pruebas correctas | ${finalQuality.failures} observaciones</h3></div><div class="quality-certificate-grid">${qualityChecklistHtml(order.finalChecklist || {})}</div></section>` : ""}
+        ${(order.approvalStatus || "Pendiente") === "Pendiente" ? `
+          <section class="portal-approval">
+            <div><span class="portal-eyebrow">Autorizacion digital</span><h3>Confirma el presupuesto de ${money.format(Number(order.total || 0))}</h3><p>La decision quedara vinculada al folio, fecha y codigo seguro.</p></div>
+            <label>Nombre de quien autoriza<input id="portalApprovalName" value="${escapeAttr(client.name || "")}" maxlength="120"></label>
+            <div class="record-actions"><button class="btn primary" type="button" onclick="submitPortalDecision('Aprobado')">Aprobar presupuesto</button><button class="btn ghost" type="button" onclick="submitPortalDecision('Rechazado')">Rechazar</button></div>
+          </section>` : ""}
         ${history.length ? `<div class="portal-history"><strong>Historial</strong>${history.map((item) => `<span>${escapeHtml(item.status || "")} | ${escapeHtml(formatDate(item.at || ""))}</span>`).join("")}</div>` : ""}
-        ${(order.statusEvidencePhotos || []).length ? `<div class="photo-strip readonly">${(order.statusEvidencePhotos || []).slice(0, 6).map((photo) => `<figure><img src="${photo.dataUrl}" alt="${escapeHtml(photo.name || "Evidencia")}"></figure>`).join("")}</div>` : ""}
+        ${(order.statusEvidencePhotos || []).some((photo) => photoSource(photo)) ? `<div class="photo-strip readonly">${(order.statusEvidencePhotos || []).filter((photo) => photoSource(photo)).slice(0, 6).map((photo) => `<figure><img src="${escapeHtml(photoSource(photo))}" alt="${escapeHtml(photo.name || "Evidencia")}"></figure>`).join("")}</div>` : ""}
         ${delivered ? `<div class="record-actions"><button class="btn primary" type="button" onclick="printPortalOrder()">Descargar PDF</button></div>` : ""}
       </div>`;
+}
+
+async function submitPortalDecision(decision) {
+  const lookup = $("portalFolio").value.trim();
+  const code = $("portalCode").value.trim();
+  const customerName = $("portalApprovalName")?.value.trim() || "";
+  if (!lookup || !code || customerName.length < 3) {
+    showAlert("Escribe el nombre de quien autoriza.", "error");
+    return;
+  }
+  if (!confirm(`${decision === "Aprobado" ? "Aprobar" : "Rechazar"} el presupuesto de esta orden?`)) return;
+  try {
+    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(lookup)}/approval`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      body: JSON.stringify({ code, decision, customerName })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "No se pudo registrar la decision");
+    showAlert(`Presupuesto ${decision.toLowerCase()} correctamente.`, "ok");
+    $("portalForm").requestSubmit();
+  } catch (error) {
+    showAlert(error.message, "error");
+  }
 }
 
 function printPortalOrder() {
@@ -1846,6 +2033,8 @@ function draftOrderFromForm() {
     warrantyTerms: defaultWarrantyTerms(),
     replacedPartsDisposition: $("orderReplacedPartsDisposition").value,
     customerAuthorization: $("orderCustomerAuthorization").checked,
+    intakeChecklist: readQualityChecklist("intakeChecklist"),
+    finalChecklist: readQualityChecklist("finalChecklist"),
     suppliedParts: currentSelectedParts,
     statusEvidencePhotos: currentEvidencePhotos,
     updatedAt: now()
@@ -1855,6 +2044,38 @@ function draftOrderFromForm() {
 function printOrderById(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   if (order) printOrderDocument(order);
+}
+
+function printOrderLabel(orderId) {
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order) return;
+  const client = getClient(order.clientId) || {};
+  const popup = window.open("", "_blank", "width=520,height=620");
+  if (!popup) return showAlert("Permite ventanas emergentes para imprimir la etiqueta.", "error");
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiqueta ${escapeHtml(order.folio || "PCFix")}</title><style>
+    body{margin:0;font-family:Arial,sans-serif;color:#1F2937}.label{width:92mm;min-height:58mm;border:1px solid #DDE6EF;padding:7mm;box-sizing:border-box}.head{display:flex;align-items:center;gap:10px;border-bottom:3px solid #20C7D8;padding-bottom:8px}.head img{width:48px;height:48px;object-fit:contain}.head strong{display:block;color:#0B3B63;font-size:20px}.head span{font-size:11px;color:#667085}.folio{margin:12px 0 5px;color:#0B3B63;font-size:24px;font-weight:900}.device{font-size:15px;font-weight:800}.meta{margin:5px 0;color:#475467;font-size:12px}.barcode{margin-top:12px;text-align:center}.barcode svg{max-width:100%;height:54px}.code{font-family:monospace;font-size:11px;letter-spacing:2px}@media print{.label{border:0}button{display:none}}</style></head><body>
+    <button onclick="window.print()">Imprimir</button><section class="label"><div class="head"><img src="assets/logo-pcfix.png"><div><strong>PCFix Comitan</strong><span>Control de servicio</span></div></div>
+    <div class="folio">${escapeHtml(order.folio || "")}</div><div class="device">${escapeHtml(order.device || "Equipo")}</div><div class="meta">${escapeHtml(client.name || "Cliente")} | ${escapeHtml(order.technician || "Tecnico")}</div><div class="meta">Entrega: ${escapeHtml(order.promisedAt ? formatDateTime(order.promisedAt) : "Por confirmar")}</div>
+    <div class="barcode">${code39Svg(order.folio || order.id)}<div class="code">${escapeHtml(order.folio || order.id)}</div></div></section></body></html>`);
+  popup.document.close();
+}
+
+function code39Svg(value) {
+  const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-. $/+%";
+  const encodings = [0x034,0x121,0x061,0x160,0x031,0x130,0x070,0x025,0x124,0x064,0x109,0x049,0x148,0x019,0x118,0x058,0x00D,0x10C,0x04C,0x01C,0x103,0x043,0x142,0x013,0x112,0x052,0x007,0x106,0x046,0x016,0x181,0x0C1,0x1C0,0x091,0x190,0x0D0,0x085,0x184,0x0C4,0x0A8,0x0A2,0x08A,0x02A];
+  const safe = String(value || "PCFIX").toUpperCase().split("").filter((char) => alphabet.includes(char));
+  const sequence = [0x094, ...safe.map((char) => encodings[alphabet.indexOf(char)]), 0x094];
+  let x = 8;
+  const bars = [];
+  sequence.forEach((encoding) => {
+    for (let index = 0; index < 9; index += 1) {
+      const width = ((encoding >> (8 - index)) & 1) ? 3 : 1;
+      if (index % 2 === 0) bars.push(`<rect x="${x}" y="2" width="${width}" height="48" fill="#0B3B63"/>`);
+      x += width;
+    }
+    x += 1;
+  });
+  return `<svg viewBox="0 0 ${x + 8} 52" role="img" aria-label="Codigo de barras ${escapeAttr(value)}">${bars.join("")}</svg>`;
 }
 
 function printOrderDocument(order, options = {}) {
@@ -1898,6 +2119,7 @@ function printOrderDocument(order, options = {}) {
       table{width:100%;border-collapse:collapse;margin-top:8px}td,th{border-bottom:1px solid #DDE6EF;padding:10px;text-align:left}th{color:#667085;font-size:12px;text-transform:uppercase}
       .brand-line{height:5px;background:linear-gradient(90deg,#0B3B63 0 82%,#20C7D8 82% 100%)}
       .signature{height:80px;border-bottom:1px solid #9AA8B8;margin-top:40px}.signature-label{text-align:center;color:#667085;font-size:12px}
+      .checks{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.checks span{display:grid;gap:3px;border:1px solid #DDE6EF;border-radius:7px;padding:8px;font-size:10px}.checks b{color:#0B3B63}
       footer{margin-top:20px;border-top:1px solid #DDE6EF;padding-top:14px;color:#667085;font-size:12px}
       button{margin:0 0 16px;border:1px solid #0B3B63;border-radius:8px;background:#0B3B63;color:#fff;padding:11px 15px;font-weight:900}
       @media print{body{background:#fff}button{display:none}main{padding:0}.sheet{box-shadow:none;border-radius:0}}
@@ -1918,6 +2140,8 @@ function printOrderDocument(order, options = {}) {
       </section>
       <section class="box"><h2>Refacciones utilizadas</h2><table><thead>${partsHeader}</thead><tbody>${partsRows}</tbody></table></section>
       <section class="box soft"><h2>Autorizacion y refacciones sustituidas</h2><p>Presupuesto: ${escapeHtml(order.approvalStatus || "Pendiente")} | Autorizacion registrada: ${order.customerAuthorization ? "Si" : "No"}</p><p>Destino de refacciones sustituidas: ${escapeHtml(order.replacedPartsDisposition || "Entregar al cliente")}</p></section>
+      <section class="box"><h2>Control funcional al recibir</h2><div class="checks">${qualityChecklistHtml(order.intakeChecklist || {})}</div></section>
+      ${isDelivery ? `<section class="box soft"><h2>Control funcional antes de entregar</h2><div class="checks">${qualityChecklistHtml(order.finalChecklist || {})}</div></section>` : ""}
       <section class="grid"><div class="box"><h2>Garantia</h2><p>${Number(order.warrantyDays || 90)} dias</p><p class="muted">${escapeHtml(order.warrantyTerms || defaultWarrantyTerms())}</p></div><div class="box"><h2>Importe</h2><p class="total">${money.format(Number(order.total || 0))}</p><p>Anticipo/pagado: ${money.format(getPaid(order))}</p><p>Saldo: ${money.format(getBalance(order))}</p></div></section>
       ${isDelivery ? `<section class="grid"><div><div class="signature"></div><p class="signature-label">${escapeHtml(technicianName)}</p></div><div><div class="signature"></div><p class="signature-label">${escapeHtml(clientName)}</p></div></section>` : ""}
       <footer>PCFix Comitan | La solucion a tus problemas | Documento generado desde informacion registrada en la base de datos.</footer>
@@ -2107,8 +2331,8 @@ function orderMessage(order) {
 }
 
 function trackingMessage(order) {
-  const portalUrl = `${window.location.origin}${window.location.pathname}?portal=1&folio=${encodeURIComponent(order.folio || "")}`;
-  return `Hola, puedes consultar el seguimiento visual de tu reparacion con el folio ${order.folio || ""} en el portal de PCFix: ${portalUrl}. Estado actual: ${order.status || ""}.`;
+  const portalUrl = `${window.location.origin}${window.location.pathname}?portal=1&folio=${encodeURIComponent(order.folio || "")}&code=${encodeURIComponent(order.trackingCode || "")}`;
+  return `Hola, puedes consultar el seguimiento visual de tu reparacion con el folio ${order.folio || ""} en el portal seguro de PCFix: ${portalUrl}. Estado actual: ${order.status || ""}.`;
 }
 
 function deliveryMessage(order) {
@@ -2172,7 +2396,9 @@ Object.assign(window, {
   removeSelectedOrderPart,
   addCommonFailure,
   printPortalOrder,
+  submitPortalDecision,
   togglePatternPoint,
   removePurchaseItemRow,
-  printOrderById
+  printOrderById,
+  printOrderLabel
 });

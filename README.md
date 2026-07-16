@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-compras-visual-20260716-04`
+`pcfix-seguridad-calidad-20260716-05`
 
 ## Que subir a GitHub
 
@@ -37,6 +37,12 @@ Variables necesarias en backend:
 - `ADMIN_EMAIL`
 - `ADMIN_PASSWORD`
 - `JWT_SECRET`
+- `SENSITIVE_DATA_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` (secreto, solo backend)
+
+`CORS_ORIGIN` debe contener la URL real del frontend. El bucket privado
+`pcfix-evidence` se crea automaticamente cuando Storage esta configurado.
 
 ## Verificar frontend correcto
 
@@ -49,7 +55,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-compras-visual-20260716-04
+pcfix-seguridad-calidad-20260716-05
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -59,7 +65,7 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-modulos-premium-20260716-02
+pcfix-backend-seguridad-calidad-20260716-05
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:
@@ -78,6 +84,19 @@ select count(*) from purchases where archived = false;
 - Control de concurrencia: avisa cuando otra persona modifico el registro antes de guardar.
 - Prioridad, fecha prometida, autorizacion, costo interno, ciclo de reparacion y alertas de atraso.
 - Pagos y saldo de orden se registran en una sola operacion atomica.
+- Ingresos, cobros, cartera y margen se calculan por separado y solo las ordenes entregadas cuentan como venta realizada.
+- La sincronizacion periodica consulta primero una revision ligera y descarga el estado completo solo cuando hay cambios.
+
+## Seguridad y calidad
+
+- Portal publico protegido por folio o WhatsApp mas codigo de seguimiento; el enlace enviado al cliente ya incluye el codigo.
+- Datos internos filtrados por rol y credenciales de desbloqueo cifradas, auditadas y eliminadas al cerrar la orden.
+- RLS habilitado y acceso directo de los roles publicos de Supabase revocado solo en las tablas de PCFix.
+- Evidencias en bucket privado, con validacion de tipo, limite de 3 MB y enlaces temporales.
+- Aprobacion o rechazo digital del presupuesto con trazabilidad de fecha, cliente y sesion.
+- Checklist de recepcion y control final; una orden no puede pasar a Listo o Entregado con pruebas pendientes.
+- Etiqueta imprimible por orden, historial por cliente, calidad de refacciones y trazabilidad por lote/serie/proveedor.
+- Pruebas automaticas y workflow de GitHub Actions incluidos en `.github/workflows/quality.yml`.
 
 ## Identidad visual y portal
 

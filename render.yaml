@@ -9,11 +9,23 @@ services:
     envVars:
       - key: JWT_SECRET
         generateValue: true
+      - key: SENSITIVE_DATA_KEY
+        generateValue: true
       - key: ADMIN_EMAIL
         value: admin@pcfix.local
       - key: ADMIN_PASSWORD
         sync: false
       - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGIN
+        value: https://pcfix-sistema.onrender.com
+      - key: SUPABASE_URL
+        value: https://yafxbmprwjxiuemhlqso.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_EVIDENCE_BUCKET
+        value: pcfix-evidence
+      - key: WHATSAPP_APP_SECRET
         sync: false
 
   - type: web
