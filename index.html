@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-identidad-visual-20260716-03">
+    <meta name="pcfix-version" content="pcfix-compras-visual-20260716-04">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -256,11 +256,14 @@
               <div class="purchase-builder">
                 <div class="purchase-builder-head">
                   <div><strong>Productos solicitados</strong><span>Agrega todas las piezas de esta cotizacion.</span></div>
-                  <button id="addPurchaseItemBtn" class="btn ghost" type="button">Agregar producto</button>
+                  <div class="purchase-builder-actions">
+                    <span id="purchaseItemCount" class="purchase-item-count">1 producto</span>
+                    <button id="addPurchaseItemBtn" class="btn ghost" type="button"><b aria-hidden="true">+</b> Agregar producto</button>
+                  </div>
                 </div>
                 <div class="purchase-column-head"><span>Producto</span><span>Cantidad</span><span>Costo unitario</span><span>Subtotal</span><span></span></div>
                 <div id="purchaseItems" class="purchase-items"></div>
-                <div class="purchase-total"><span>Total estimado</span><strong id="purchaseItemsTotal">$0.00</strong></div>
+                <div class="purchase-total"><div><small>Resumen de compra</small><span>Total estimado</span></div><strong id="purchaseItemsTotal">$0.00</strong></div>
               </div>
               <div class="form-grid">
                 <label>Estatus<select id="purchaseStatus"></select></label>

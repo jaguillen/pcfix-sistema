@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-identidad-visual-20260716-03`
+`pcfix-compras-visual-20260716-04`
 
 ## Que subir a GitHub
 
@@ -49,7 +49,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-identidad-visual-20260716-03
+pcfix-compras-visual-20260716-04
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -86,6 +86,13 @@ select count(*) from purchases where archived = false;
 - Animaciones de estado basadas en el logotipo original de PCFix, sin modificarlo.
 - Interfaz responsiva con jerarquia visual, color semantico y microinteracciones.
 - Control de animaciones desde Configuracion y compatibilidad con `prefers-reduced-motion`.
+
+## Compras multiproducto
+
+- Area de captura amplia para mostrar producto, cantidad, costo unitario, subtotal y acciones sin recortes.
+- Partidas responsivas con etiquetas individuales en tablet y celular.
+- Contador de productos y resumen financiero de la compra.
+- Listado de compras con estado, total, orden relacionada y piezas faciles de escanear.
 - Evidencias fotograficas optimizadas antes de enviarse.
 - Actualizacion automatica desde BD al volver a la ventana y cada 45 segundos cuando no hay formularios en uso.
 - Clientes y selectores ordenados alfabeticamente.

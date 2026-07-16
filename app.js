@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-identidad-visual-20260716-03";
+const PCFIX_FRONTEND_VERSION = "pcfix-compras-visual-20260716-04";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -668,14 +668,22 @@ function renderPurchases() {
     const order = state.orders.find((o) => o.id === p.orderId);
     const items = p.items?.length ? p.items : [{ part: p.part, qty: p.qty || 1, cost: p.cost || 0 }];
     const total = items.reduce((sum, item) => sum + Number(item.qty || 1) * Number(item.cost || 0), 0);
+    const purchaseTone = { cotizando: "quote", pedido: "ordered", recibido: "received", cancelado: "canceled" }[normalize(p.status)] || "quote";
     return card(`
-      <strong>${escapeHtml(p.folio || p.id)} | ${items.length} producto(s)</strong>
-      <span>${escapeHtml(supplier?.name || "Sin proveedor")} ${order ? "| " + escapeHtml(order.folio) : ""}</span>
-      <small>${escapeHtml(p.status || "")} | ${money.format(total)} | ${items.map((item) => `${item.qty || 1}x ${item.part || ""}`).join(", ")}</small>
+      <div class="purchase-record-head">
+        <div><strong>${escapeHtml(p.folio || p.id)}</strong><span>${escapeHtml(supplier?.name || "Sin proveedor")}</span></div>
+        <b class="status-badge purchase-status ${purchaseTone}">${escapeHtml(p.status || "Sin estatus")}</b>
+      </div>
+      <div class="purchase-record-summary">
+        <div><small>Productos</small><strong>${items.length}</strong></div>
+        <div><small>Total</small><strong>${money.format(total)}</strong></div>
+        <div><small>Orden</small><strong>${escapeHtml(order?.folio || "Sin orden")}</strong></div>
+      </div>
+      <div class="purchase-record-items">${items.map((item) => `<span>${Math.max(1, Number(item.qty || 1))}x ${escapeHtml(item.part || "Producto")}</span>`).join("")}</div>
       <div class="record-actions">
         <button onclick="editPurchase('${p.id}')" class="btn ghost">Editar</button>
-        ${!["Recibido", "Cancelado"].includes(p.status) ? `<button onclick="receivePurchase('${p.id}')" class="btn ghost">Recibir en inventario</button>` : ""}
-        <a class="btn ghost" target="_blank" rel="noreferrer" href="${supplier ? waUrl(supplier.phone, purchaseMessage(p)) : "#"}">WhatsApp</a>
+        ${!["Recibido", "Cancelado"].includes(p.status) ? `<button onclick="receivePurchase('${p.id}')" class="btn primary">Recibir inventario</button>` : ""}
+        ${supplier ? `<a class="btn ghost" target="_blank" rel="noreferrer" href="${waUrl(supplier.phone, purchaseMessage(p))}">WhatsApp</a>` : ""}
         <button onclick="removeRecord('purchase','${p.id}')" class="btn danger">Archivar</button>
       </div>`);
   }).join("") || empty("Sin compras en BD");
@@ -1606,10 +1614,10 @@ function purchaseItemRow(item) {
   const cost = Number(item.cost || 0);
   return `
     <div class="purchase-item" data-purchase-item="${item.id || id("pitem")}">
-      <input data-field="part" aria-label="Producto" placeholder="Ej. Pantalla OLED Oppo A38" value="${escapeHtml(item.part || "")}">
-      <input data-field="qty" aria-label="Cantidad" type="number" min="1" value="${qty}">
-      <input data-field="cost" aria-label="Costo unitario" type="number" min="0" step="0.01" value="${cost}">
-      <output data-field="subtotal">${money.format(qty * cost)}</output>
+      <label class="purchase-cell purchase-cell-product"><span>Producto</span><input data-field="part" aria-label="Producto" placeholder="Ej. Pantalla OLED Oppo A38" value="${escapeHtml(item.part || "")}"></label>
+      <label class="purchase-cell purchase-cell-qty"><span>Cantidad</span><input data-field="qty" aria-label="Cantidad" type="number" min="1" value="${qty}"></label>
+      <label class="purchase-cell purchase-cell-cost"><span>Costo unitario</span><input data-field="cost" aria-label="Costo unitario" type="number" min="0" step="0.01" value="${cost}"></label>
+      <div class="purchase-cell purchase-cell-subtotal"><span>Subtotal</span><output data-field="subtotal">${money.format(qty * cost)}</output></div>
       <button class="icon-button danger" type="button" onclick="removePurchaseItemRow(this)" aria-label="Quitar producto" title="Quitar producto">&times;</button>
     </div>`;
 }
@@ -1638,6 +1646,7 @@ function updatePurchaseItemsTotal() {
     return sum + subtotal;
   }, 0);
   if ($("purchaseItemsTotal")) $("purchaseItemsTotal").textContent = money.format(total);
+  if ($("purchaseItemCount")) $("purchaseItemCount").textContent = `${rows.length} ${rows.length === 1 ? "producto" : "productos"}`;
 }
 
 function getPurchaseItemsFromForm() {
