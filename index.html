@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-fotos-directas-20260716-09">
+    <meta name="pcfix-version" content="pcfix-flujo-estatus-20260722-10">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
@@ -134,7 +134,7 @@
               <datalist id="modelSuggestions"></datalist>
               <label>Tecnico<select id="orderTechnician" required></select></label>
               <label>Serie / IMEI<input id="orderSerial"></label>
-              <label>Estatus<select id="orderStatus"></select></label>
+              <label>Estatus<select id="orderStatus" disabled aria-label="Estatus actual de la orden"></select></label>
               <label>Prioridad<select id="orderPriority"><option>Baja</option><option selected>Normal</option><option>Alta</option><option>Urgente</option></select></label>
               <label>Entrega prometida<input id="orderPromisedAt" type="datetime-local"></label>
               <label>Autorizacion<select id="orderApprovalStatus"><option>Pendiente</option><option>Aprobado</option><option>Rechazado</option></select></label>
@@ -427,6 +427,33 @@
         </div>
         <label>Notas<textarea id="suggestedPurchaseNotes" rows="3" placeholder="Calidad requerida, color, version o urgencia..."></textarea></label>
         <div class="dialog-actions"><button class="btn ghost" id="cancelPurchaseSuggestionBtn" type="button">Cancelar</button><button class="btn primary" type="submit">Crear solicitud de cotizacion</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="statusChangeDialog" class="purchase-dialog status-change-dialog">
+      <form id="statusChangeForm" class="dialog-surface status-change-surface">
+        <div class="dialog-head">
+          <div><span>Seguimiento de reparacion</span><h2>Actualizar estatus y pruebas</h2></div>
+          <button id="closeStatusChangeBtn" class="icon-button" type="button" aria-label="Cerrar">&times;</button>
+        </div>
+        <div class="status-change-summary">
+          <div><small>Orden</small><strong id="statusChangeOrder">-</strong></div>
+          <div><small>Equipo</small><strong id="statusChangeDevice">-</strong></div>
+          <div><small>Estatus actual</small><strong id="statusChangeCurrent">-</strong></div>
+        </div>
+        <label>Nuevo estatus<select id="statusChangeNext" required></select></label>
+        <section class="quality-workspace status-quality-workspace">
+          <div class="quality-head"><div><span>Pruebas de entrega</span><h2>Validacion funcional del equipo</h2></div><small id="statusQualityHint">Puedes actualizar las pruebas en cada cambio de estatus.</small></div>
+          <div id="statusChangeChecklist" class="quality-checklist status-quality-checklist"></div>
+        </section>
+        <label>Observaciones del cambio<textarea id="statusChangeNotes" rows="3" placeholder="Trabajo realizado, resultado de pruebas o indicaciones para el cliente..."></textarea></label>
+        <label>Evidencia fotografica del estatus<input id="statusChangeEvidence" type="file" accept="image/*" multiple></label>
+        <div id="statusChangeEvidencePreview" class="photo-strip status-evidence-preview"></div>
+        <div class="status-whatsapp-notice"><span></span><div><strong>Notificacion al cliente</strong><small>Al guardar se abrira WhatsApp con el estatus y la liga segura de seguimiento.</small></div></div>
+        <div class="dialog-actions">
+          <button id="cancelStatusChangeBtn" class="btn ghost" type="button">Cancelar</button>
+          <button class="btn primary" type="submit">Guardar y avisar por WhatsApp</button>
+        </div>
       </form>
     </dialog>
 

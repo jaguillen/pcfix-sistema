@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-fotos-directas-20260716-09`
+`pcfix-flujo-estatus-20260722-10`
 
 ## Que subir a GitHub
 
@@ -52,7 +52,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-fotos-directas-20260716-09
+pcfix-flujo-estatus-20260722-10
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -83,6 +83,8 @@ select count(*) from purchases where archived = false;
 - Pagos y saldo de orden se registran en una sola operacion atomica.
 - Ingresos, cobros, cartera y margen se calculan por separado y solo las ordenes entregadas cuentan como venta realizada.
 - La sincronizacion periodica consulta primero una revision ligera y descarga el estado completo solo cuando hay cambios.
+- Cada cambio de estatus abre un flujo unico para registrar pruebas funcionales, observaciones y evidencia fotografica antes de guardar en PostgreSQL.
+- Los estados Listo y Entregado exigen completar las pruebas de entrega; al confirmar se prepara el aviso de WhatsApp con el nuevo estatus y la liga segura del portal.
 
 ## Seguridad y calidad
 

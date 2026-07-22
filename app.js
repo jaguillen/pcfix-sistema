@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-fotos-directas-20260716-09";
+const PCFIX_FRONTEND_VERSION = "pcfix-flujo-estatus-20260722-10";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -94,6 +94,8 @@ let lastDatabaseLoadAt = 0;
 let lastStateRevision = "";
 let pendingSuggestedPurchase = null;
 let lastMissingPartPromptKey = "";
+let pendingStatusChange = null;
+let pendingStatusEvidencePhotos = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -199,6 +201,7 @@ function hydrateLogin() {
 
 function fillStaticOptions() {
   $("orderStatus").innerHTML = orderStatuses.map((s) => `<option>${s}</option>`).join("");
+  $("statusChangeNext").innerHTML = orderStatuses.map((s) => `<option>${s}</option>`).join("");
   $("purchaseStatus").innerHTML = purchaseStatuses.map((s) => `<option>${s}</option>`).join("");
   $("categorySuggestions").innerHTML = categories.map((c) => `<option value="${escapeHtml(c)}"></option>`).join("");
   $("modelSuggestions").innerHTML = modelCatalog.map((m) => `<option value="${escapeHtml(m)}"></option>`).join("");
@@ -251,6 +254,12 @@ function wireEvents() {
   $("suggestedPurchaseForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => saveSuggestedPurchase(event)); });
   $("closePurchaseSuggestionBtn").addEventListener("click", closePurchaseSuggestion);
   $("cancelPurchaseSuggestionBtn").addEventListener("click", closePurchaseSuggestion);
+  $("statusChangeForm").addEventListener("submit", (event) => { event.preventDefault(); runAction(() => confirmStatusChange()); });
+  $("closeStatusChangeBtn").addEventListener("click", closeStatusChangeDialog);
+  $("cancelStatusChangeBtn").addEventListener("click", closeStatusChangeDialog);
+  $("statusChangeDialog").addEventListener("cancel", (event) => { event.preventDefault(); closeStatusChangeDialog(); });
+  $("statusChangeNext").addEventListener("change", updateStatusChangeRequirements);
+  $("statusChangeEvidence").addEventListener("change", handleStatusChangeEvidence);
   $("loadAdminReportBtn").addEventListener("click", loadAdminReports);
   $("themeBlue").addEventListener("input", applyThemeFromInputs);
   $("themeCyan").addEventListener("input", applyThemeFromInputs);
@@ -1187,41 +1196,133 @@ async function saveSettings(event) {
 }
 
 async function quickStatus(orderId) {
-  const order = state.orders.find((o) => o.id === orderId);
-  if (!order) return;
-  const next = prompt(`Nuevo estatus:\n${orderStatuses.join(" | ")}`, order.status || "Recibido");
-  if (!next) return;
-  await changeOrderStatus(orderId, next);
+  openStatusChangeDialog(orderId);
 }
 
 async function changeOrderStatus(orderId, next) {
-  return runAction(() => changeOrderStatusDirect(orderId, next));
+  openStatusChangeDialog(orderId, next);
 }
 
-async function changeOrderStatusDirect(orderId, next) {
+function openStatusChangeDialog(orderId, next = "") {
   const order = state.orders.find((o) => o.id === orderId);
-  if (!order || !next || next === order.status) return;
+  if (!order) return;
+  pendingStatusChange = { orderId, originalStatus: order.status || "Recibido" };
+  pendingStatusEvidencePhotos = [];
+  $("statusChangeOrder").textContent = order.folio || order.id;
+  $("statusChangeDevice").textContent = order.device || "Equipo";
+  $("statusChangeCurrent").textContent = order.status || "Recibido";
+  $("statusChangeNext").value = orderStatuses.includes(next) ? next : (order.status || "Recibido");
+  $("statusChangeNotes").value = "";
+  $("statusChangeEvidence").value = "";
+  renderQualityChecklist("statusChangeChecklist", order.finalChecklist || {});
+  renderStatusChangeEvidence();
+  updateStatusChangeRequirements();
+  $("statusChangeDialog").showModal();
+}
+
+function closeStatusChangeDialog() {
+  if ($("statusChangeDialog").open) $("statusChangeDialog").close();
+  pendingStatusChange = null;
+  pendingStatusEvidencePhotos = [];
+  renderOrders();
+}
+
+function updateStatusChangeRequirements() {
+  const next = $("statusChangeNext").value;
+  const requiresCompleteTests = ["Listo", "Entregado"].includes(next);
+  $("statusQualityHint").textContent = requiresCompleteTests
+    ? "Para continuar, ninguna prueba puede quedar como No probado."
+    : "Puedes registrar o actualizar las pruebas en este cambio de estatus.";
+  $("statusChangeDialog").classList.toggle("requires-quality", requiresCompleteTests);
+}
+
+async function handleStatusChangeEvidence(event) {
+  try {
+    const files = Array.from(event.target.files || []).slice(0, 6);
+    const photos = await Promise.all(files.map(fileToPhoto));
+    pendingStatusEvidencePhotos = [...pendingStatusEvidencePhotos, ...photos].slice(-6);
+    renderStatusChangeEvidence();
+  } catch (error) {
+    showAlert(`No se pudo procesar la evidencia: ${error.message}`, "error");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function renderStatusChangeEvidence() {
+  $("statusChangeEvidencePreview").innerHTML = pendingStatusEvidencePhotos.map((photo) => `
+    <figure>
+      <img src="${escapeHtml(photoSource(photo))}" alt="${escapeHtml(photo.name || "Evidencia de estatus")}">
+      <button class="btn danger" type="button" onclick="removeStatusChangeEvidence('${photo.id}')">Quitar</button>
+    </figure>
+  `).join("");
+}
+
+function removeStatusChangeEvidence(photoId) {
+  pendingStatusEvidencePhotos = pendingStatusEvidencePhotos.filter((photo) => photo.id !== photoId);
+  renderStatusChangeEvidence();
+}
+
+async function confirmStatusChange() {
+  const order = state.orders.find((item) => item.id === pendingStatusChange?.orderId);
+  if (!order) throw new Error("La orden ya no esta disponible. Actualiza la pagina.");
+  const next = $("statusChangeNext").value;
+  if (!orderStatuses.includes(next)) throw new Error("Selecciona un estatus valido.");
+  if (next === order.status) {
+    closeStatusChangeDialog();
+    showAlert("Selecciona un estatus diferente al actual.", "error");
+    return;
+  }
+  const finalChecklist = readQualityChecklist("statusChangeChecklist");
+  const pendingTests = qualityChecks.filter((check) => !finalChecklist[check.key] || finalChecklist[check.key] === "No probado");
+  if (["Listo", "Entregado"].includes(next) && pendingTests.length) {
+    throw new Error(`Completa las pruebas pendientes: ${pendingTests.map((check) => check.label).join(", ")}.`);
+  }
+  const notes = $("statusChangeNotes").value.trim();
+  const client = getClient(order.clientId);
+  let whatsappWindow = null;
+  if (client?.phone) {
+    whatsappWindow = window.open("about:blank", "_blank");
+    if (whatsappWindow) {
+      whatsappWindow.opener = null;
+      whatsappWindow.document.title = "Preparando WhatsApp";
+      whatsappWindow.document.body.innerHTML = "<p style='font-family:Arial;padding:24px'>Guardando cambio de estatus...</p>";
+    }
+  }
   const updated = {
     ...order,
     status: next,
     deposit: next === "Entregado" ? Number(order.total || 0) : order.deposit,
     paid: next === "Entregado" ? true : order.paid,
     completedAt: next === "Entregado" ? (order.completedAt || now()) : "",
-    statusHistory: updateHistory(order, next),
+    finalChecklist,
+    statusEvidencePhotos: [...(order.statusEvidencePhotos || []), ...pendingStatusEvidencePhotos].slice(-12),
+    statusHistory: updateHistory(order, next, {
+      note: notes,
+      tests: qualitySummary(finalChecklist),
+      evidenceCount: pendingStatusEvidencePhotos.length
+    }),
     updatedAt: now()
   };
-  await saveRecord("order", updated);
-  if (next === "Entregado") {
-    handleDeliveredOrder(updated);
-    return;
+  try {
+    const saved = await saveRecord("order", updated);
+    const current = state.orders.find((item) => item.id === saved.id) || saved || updated;
+    const whatsappOpened = client?.phone
+      ? Boolean(openWhatsApp(client.phone, statusUpdateMessage(current, notes), whatsappWindow))
+      : false;
+    if (!client?.phone && whatsappWindow && !whatsappWindow.closed) whatsappWindow.close();
+    closeStatusChangeDialog();
+    if (next === "Entregado") printOrderDocument(current, { context: "delivery" });
+    const notificationMessage = !client?.phone
+      ? `Estatus actualizado a ${next}. El cliente no tiene WhatsApp registrado.`
+      : whatsappOpened
+        ? `Estatus actualizado a ${next}. WhatsApp de seguimiento abierto.`
+        : `Estatus actualizado a ${next}. Permite ventanas emergentes para abrir WhatsApp.`;
+    showAlert(notificationMessage, whatsappOpened ? "ok" : "error");
+  } catch (error) {
+    if (whatsappWindow && !whatsappWindow.closed) whatsappWindow.close();
+    throw error;
   }
-  sendStatusWhatsApp(updated.id);
-}
-
-function handleDeliveredOrder(order) {
-  showAlert("Orden entregada, saldo marcado como pagado. Se abrira el comprobante y WhatsApp.", "ok");
-  printOrderDocument(order, { context: "delivery" });
-  sendDeliveryWhatsApp(order.id);
 }
 
 function sendStatusWhatsApp(orderId) {
@@ -1231,7 +1332,7 @@ function sendStatusWhatsApp(orderId) {
     showAlert("Esta orden no tiene cliente con telefono WhatsApp.", "error");
     return;
   }
-  window.open(waUrl(client.phone, orderMessage(order)), "_blank", "noreferrer");
+  openWhatsApp(client.phone, statusUpdateMessage(order));
 }
 
 function sendTrackingWhatsApp(orderId) {
@@ -1241,7 +1342,7 @@ function sendTrackingWhatsApp(orderId) {
     showAlert("Esta orden no tiene cliente con telefono WhatsApp.", "error");
     return;
   }
-  window.open(waUrl(client.phone, trackingMessage(order)), "_blank", "noreferrer");
+  openWhatsApp(client.phone, trackingMessage(order));
 }
 
 function sendDeliveryWhatsApp(orderId) {
@@ -1251,7 +1352,7 @@ function sendDeliveryWhatsApp(orderId) {
     showAlert("Esta orden no tiene cliente con telefono WhatsApp.", "error");
     return;
   }
-  window.open(waUrl(client.phone, deliveryMessage(order)), "_blank", "noreferrer");
+  openWhatsApp(client.phone, deliveryMessage(order));
 }
 
 async function removeRecord(type, idValue) {
@@ -2237,10 +2338,20 @@ function nextPurchaseFolio() {
   return `OC-${year}-${String(next).padStart(4, "0")}`;
 }
 
-function updateHistory(existing, status) {
+function updateHistory(existing, status, details = {}) {
   const history = [...(existing?.statusHistory || [])];
   if (!history.length) history.push({ status: existing?.status || "Recibido", at: existing?.createdAt || now(), user: session.user?.name || "Sistema" });
-  if (history.at(-1)?.status !== status) history.push({ status, at: now(), user: session.user?.name || "Sistema" });
+  if (history.at(-1)?.status !== status) {
+    const note = String(details.note || "").trim();
+    history.push({
+      status,
+      at: now(),
+      user: session.user?.name || "Sistema",
+      ...(note ? { note } : {}),
+      ...(details.tests ? { tests: details.tests } : {}),
+      evidenceCount: Math.max(0, Number(details.evidenceCount || 0))
+    });
+  }
   return history;
 }
 
@@ -2331,9 +2442,23 @@ function waUrl(phone, text) {
   return `https://wa.me/${to}?text=${encodeURIComponent(text || "")}`;
 }
 
-function orderMessage(order) {
+function openWhatsApp(phone, text, targetWindow = null) {
+  const url = waUrl(phone, text);
+  if (targetWindow && !targetWindow.closed) {
+    targetWindow.location.href = url;
+    return targetWindow;
+  }
+  return window.open(url, "_blank", "noreferrer");
+}
+
+function statusUpdateMessage(order, notes = "") {
   const client = getClient(order.clientId);
-  return `Hola ${client?.name || ""}, te saluda PCFix Comitan. Tu equipo ${order.device || ""} con folio ${order.folio || ""} esta en estado: ${order.status || ""}.`;
+  const portalUrl = `${window.location.origin}${window.location.pathname}?portal=1&folio=${encodeURIComponent(order.folio || "")}&code=${encodeURIComponent(order.trackingCode || "")}`;
+  const noteText = notes ? `\nActualizacion: ${notes}` : "";
+  const deliveryText = order.status === "Entregado"
+    ? `\n\nTu comprobante de servicio esta listo. Gracias por confiar en PCFix Comitan.\nRecomiendanos en Facebook: ${facebookReviewUrl}`
+    : "";
+  return `Hola ${client?.name || ""}, te saluda PCFix Comitan.\n\nOrden: ${order.folio || ""}\nEquipo: ${order.device || ""}\nNuevo estatus: ${order.status || ""}${noteText}\n\nConsulta tu seguimiento:\n${portalUrl}${deliveryText}`;
 }
 
 function trackingMessage(order) {
@@ -2399,6 +2524,7 @@ Object.assign(window, {
   sendDeliveryWhatsApp,
   receivePurchase,
   removeEvidencePhoto,
+  removeStatusChangeEvidence,
   removeSelectedOrderPart,
   addCommonFailure,
   printPortalOrder,
