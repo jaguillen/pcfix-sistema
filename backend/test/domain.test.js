@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { financialSummary, pendingQualityChecks, repairProgress } from "../src/domain.js";
+import {
+  createTrackingCode,
+  financialSummary,
+  pendingQualityChecks,
+  publicEvidencePhotos,
+  publicStatusHistory,
+  repairProgress
+} from "../src/domain.js";
 
 test("seguimiento entregado llega exactamente a 100 por ciento", () => {
   assert.equal(repairProgress("Recibido"), 17);
@@ -32,4 +39,31 @@ test("finanzas separan venta realizada cobro y cartera", () => {
     grossMargin: 650,
     marginRate: 65
   });
+});
+
+test("portal genera tokens fuertes y filtra contenido interno", () => {
+  const first = createTrackingCode();
+  const second = createTrackingCode();
+  assert.ok(first.length >= 22);
+  assert.notEqual(first, second);
+  assert.match(first, /^[A-Za-z0-9_-]+$/);
+  assert.deepEqual(publicEvidencePhotos([
+    { id: "publica", customerVisible: true },
+    { id: "legacy" },
+    { id: "interna", customerVisible: false }
+  ]).map((photo) => photo.id), ["publica", "legacy"]);
+  assert.deepEqual(publicStatusHistory([{
+    status: "Diagnostico",
+    at: "2026-07-22T10:00:00.000Z",
+    note: "Nota interna",
+    publicNote: "Diagnostico completado",
+    evidenceCount: 3,
+    publicEvidenceCount: 1,
+    tests: { tested: 8 }
+  }]), [{
+    status: "Diagnostico",
+    at: "2026-07-22T10:00:00.000Z",
+    publicNote: "Diagnostico completado",
+    evidenceCount: 1
+  }]);
 });

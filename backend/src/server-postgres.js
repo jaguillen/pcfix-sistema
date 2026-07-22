@@ -7,7 +7,7 @@ import jwt from "jsonwebtoken";
 import { Pool } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { pendingQualityChecks } from "./domain.js";
+import { createTrackingCode, pendingQualityChecks, publicEvidencePhotos, publicStatusHistory } from "./domain.js";
 
 dotenv.config();
 
@@ -15,7 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-guardado-rapido-20260722-11";
+const backendVersion = "pcfix-backend-portal-experience-20260722-12";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -1169,8 +1169,9 @@ async function prepareRecordForSave(type, requestedId, record) {
       }
     }
     data.warrantyDays = 90;
-    const previousOrder = await query("SELECT raw_data FROM service_orders WHERE id = $1 LIMIT 1", [recordId]);
+    const previousOrder = await query("SELECT raw_data, tracking_code FROM service_orders WHERE id = $1 LIMIT 1", [recordId]);
     const previousRaw = rawObject(previousOrder.rows[0]);
+    data.trackingCode = String(data.trackingCode || previousOrder.rows[0]?.tracking_code || createTrackingCode());
     const incomingPattern = String(data.unlockPattern || "").trim();
     const previousEncryptedPattern = previousRaw.unlockPatternEncrypted
       || (previousRaw.unlockPattern ? encryptSensitive(previousRaw.unlockPattern) : "");
@@ -1471,6 +1472,7 @@ app.post("/api/auth/login", loginLimiter, async (req, res, next) => {
 });
 
 app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
+  res.set("Referrer-Policy", "no-referrer");
   const lookup = String(req.params.folio || "").trim();
   const folio = lookup.toLowerCase();
   const trackingCode = String(req.query.code || "").trim();
@@ -1481,7 +1483,7 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
   const looksLikePhone = digits.length >= 8 && !/[a-z]/i.test(lookup);
   const normalizedResult = looksLikePhone
     ? await query(
-        `SELECT o.*, c.name AS client_name
+        `SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email
          FROM service_orders o
          LEFT JOIN clients c ON c.id = o.client_id
          WHERE o.archived = FALSE
@@ -1491,7 +1493,7 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
         [digits.slice(-10), trackingCode]
       )
     : await query(
-        "SELECT o.*, c.name AS client_name FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
+        "SELECT o.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id WHERE o.archived = FALSE AND lower(o.folio) = $1 AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1",
         [folio, trackingCode]
       );
   if (normalizedResult.rows[0]) {
@@ -1499,7 +1501,9 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
     const order = row.raw_data || {};
     const orderParts = await query("SELECT part_name, qty FROM order_parts WHERE order_id = $1 ORDER BY created_at ASC", [row.id]);
     const publicParts = orderParts.rows.map((part) => ({ part: part.part_name || "Refaccion", qty: Math.max(1, asNumber(part.qty || 1)) }));
-    const publicEvidence = await materializeEvidencePhotos(order.statusEvidencePhotos || row.status_evidence_photos || [], 600);
+    const publicEvidence = await materializeEvidencePhotos(publicEvidencePhotos(order.statusEvidencePhotos || row.status_evidence_photos || []), 600);
+    const businessResult = await query("SELECT business_name,business_phone,business_address FROM app_settings WHERE id = 'settings' LIMIT 1");
+    const business = businessResult.rows[0] || {};
     return res.json({
       ok: true,
       order: {
@@ -1510,9 +1514,9 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
         promisedAt: row.promised_at || "",
         approvalStatus: row.approval_status || "Pendiente",
         device: row.device,
+        serial: row.serial || "",
         technician: row.technician || order.technician || "",
         issue: row.issue,
-        notes: row.notes,
         physicalState: row.physical_state,
         accessories: row.accessories || order.accessories || "",
         warrantyDays: row.warranty_days,
@@ -1520,14 +1524,26 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
         total: row.total,
         deposit: row.deposit,
         paid: row.paid,
+        customerAuthorization: Boolean(order.customerAuthorization),
+        replacedPartsDisposition: order.replacedPartsDisposition || "Entregar al cliente",
+        intakeChecklist: order.intakeChecklist || {},
+        finalChecklist: order.finalChecklist || {},
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        statusHistory: order.statusHistory || row.status_history || [],
+        statusHistory: publicStatusHistory(order.statusHistory || row.status_history || []),
         statusEvidencePhotos: publicEvidence,
-        suppliedParts: publicParts
+        suppliedParts: publicParts,
+        customerFeedback: order.customerFeedback || null
       },
       client: {
-        name: row.client_name || "Cliente"
+        name: row.client_name || "Cliente",
+        phone: row.client_phone || "",
+        email: row.client_email || ""
+      },
+      business: {
+        name: business.business_name || "PCFix Comitan",
+        phone: business.business_phone || "",
+        address: business.business_address || ""
       }
     });
   }
@@ -1535,6 +1551,7 @@ app.get("/api/public/orders/:folio", publicPortalLimiter, async (req, res) => {
 });
 
 app.post("/api/public/orders/:lookup/approval", publicPortalLimiter, async (req, res) => {
+  res.set("Referrer-Policy", "no-referrer");
   const lookup = String(req.params.lookup || "").trim();
   const trackingCode = String(req.body?.code || "").trim();
   const decision = String(req.body?.decision || "");
@@ -1591,6 +1608,46 @@ app.post("/api/public/orders/:lookup/approval", publicPortalLimiter, async (req,
     res.status(201).json({ ok: true, ...result });
   } catch (error) {
     res.status(error?.status || 500).json({ error: error?.message || "No se pudo registrar la autorizacion", code: error?.code || "approval_failed" });
+  }
+});
+
+app.post("/api/public/orders/:lookup/feedback", publicPortalLimiter, async (req, res) => {
+  res.set("Referrer-Policy", "no-referrer");
+  const lookup = String(req.params.lookup || "").trim();
+  const trackingCode = String(req.body?.code || "").trim();
+  const score = Number(req.body?.score || 0);
+  const comment = String(req.body?.comment || "").trim().slice(0, 500);
+  if (!trackingCode) return res.status(400).json({ error: "Codigo de seguimiento requerido" });
+  if (!Number.isInteger(score) || score < 1 || score > 5) return res.status(400).json({ error: "Calificacion invalida" });
+  const digits = lookup.replace(/\D/g, "");
+  const looksLikePhone = digits.length >= 8 && !/[a-z]/i.test(lookup);
+  try {
+    const result = await withTransaction(async () => {
+      const orderResult = looksLikePhone
+        ? await query(
+            `SELECT o.* FROM service_orders o LEFT JOIN clients c ON c.id = o.client_id
+             WHERE o.archived = FALSE AND right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 10) = $1
+               AND o.tracking_code = $2 ORDER BY o.updated_at DESC LIMIT 1 FOR UPDATE OF o`,
+            [digits.slice(-10), trackingCode]
+          )
+        : await query(
+            "SELECT * FROM service_orders WHERE archived = FALSE AND lower(folio) = lower($1) AND tracking_code = $2 LIMIT 1 FOR UPDATE",
+            [lookup, trackingCode]
+          );
+      const order = orderResult.rows[0];
+      if (!order) throw businessError("Orden o codigo no validos", "order_not_found", 404);
+      if (order.status !== "Entregado") throw businessError("La evaluacion estara disponible al concluir el servicio", "feedback_not_available", 409);
+      const timestamp = now();
+      const feedback = { score, comment, at: timestamp, channel: "portal_cliente" };
+      const nextRaw = { ...rawObject(order), customerFeedback: feedback };
+      await query("UPDATE service_orders SET raw_data = $1, updated_at = $2 WHERE id = $3", [JSON.stringify(nextRaw), timestamp, order.id]);
+      const ipHash = createHash("sha256").update(`${req.ip}|${sensitiveDataSecret}`).digest("hex").slice(0, 24);
+      await audit(null, "customer_feedback", "order", order.id, `Calificacion ${score}/5 ${ipHash}`);
+      return { orderId: order.id, score, at: timestamp };
+    });
+    res.status(201).json({ ok: true, ...result });
+  } catch (error) {
+    res.status(error?.status || 500).json({ error: error?.message || "No se pudo registrar la evaluacion", code: error?.code || "feedback_failed" });
   }
 });
 

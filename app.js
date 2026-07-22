@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-guardado-rapido-20260722-11";
+const PCFIX_FRONTEND_VERSION = "pcfix-portal-experience-20260722-12";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -90,6 +90,7 @@ let currentSelectedParts = [];
 let currentAdminReport = null;
 let currentPortalOrder = null;
 let currentPortalClient = null;
+let currentPortalBusiness = null;
 let lastDatabaseLoadAt = 0;
 let lastStateRevision = "";
 let pendingSuggestedPurchase = null;
@@ -1082,7 +1083,7 @@ async function saveOrder(event) {
     customerAuthorization: $("orderCustomerAuthorization").checked,
     warrantyDays: 90,
     warrantyTerms: defaultWarrantyTerms(),
-    trackingCode: existing?.trackingCode || randomCode(),
+    trackingCode: existing?.trackingCode || "",
     statusHistory: updateHistory(existing, status),
     intakeChecklist: readQualityChecklist("intakeChecklist"),
     finalChecklist: readQualityChecklist("finalChecklist"),
@@ -1294,6 +1295,7 @@ function openStatusChangeDialog(orderId, next = "") {
   $("statusChangeCurrent").textContent = order.status || "Recibido";
   $("statusChangeNext").value = orderStatuses.includes(next) ? next : (order.status || "Recibido");
   $("statusChangeNotes").value = "";
+  $("statusChangeShareWithCustomer").checked = true;
   $("statusChangeEvidence").value = "";
   renderQualityChecklist("statusChangeChecklist", order.finalChecklist || {});
   renderStatusChangeEvidence();
@@ -1321,7 +1323,14 @@ async function handleStatusChangeEvidence(event) {
   try {
     const files = Array.from(event.target.files || []).slice(0, 6);
     const photos = await Promise.all(files.map(fileToPhoto));
-    pendingStatusEvidencePhotos = [...pendingStatusEvidencePhotos, ...photos].slice(-6);
+    const customerVisible = $("statusChangeShareWithCustomer").checked;
+    const stage = $("statusChangeNext").value || "Actualizacion";
+    pendingStatusEvidencePhotos = [...pendingStatusEvidencePhotos, ...photos.map((photo) => ({
+      ...photo,
+      customerVisible,
+      stage,
+      status: stage
+    }))].slice(-6);
     renderStatusChangeEvidence();
   } catch (error) {
     showAlert(`No se pudo procesar la evidencia: ${error.message}`, "error");
@@ -1360,6 +1369,13 @@ async function confirmStatusChange() {
     throw new Error(`Completa las pruebas pendientes: ${pendingTests.map((check) => check.label).join(", ")}.`);
   }
   const notes = $("statusChangeNotes").value.trim();
+  const shareWithCustomer = $("statusChangeShareWithCustomer").checked;
+  const newStatusEvidence = pendingStatusEvidencePhotos.map((photo) => ({
+    ...photo,
+    customerVisible: shareWithCustomer,
+    stage: next,
+    status: next
+  }));
   const client = getClient(order.clientId);
   let whatsappWindow = null;
   if (client?.phone) {
@@ -1377,11 +1393,13 @@ async function confirmStatusChange() {
     paid: next === "Entregado" ? true : order.paid,
     completedAt: next === "Entregado" ? (order.completedAt || now()) : "",
     finalChecklist,
-    statusEvidencePhotos: [...(order.statusEvidencePhotos || []), ...pendingStatusEvidencePhotos].slice(-12),
+    statusEvidencePhotos: [...(order.statusEvidencePhotos || []), ...newStatusEvidence].slice(-12),
     statusHistory: updateHistory(order, next, {
       note: notes,
+      publicNote: shareWithCustomer ? notes : "",
       tests: qualitySummary(finalChecklist),
-      evidenceCount: pendingStatusEvidencePhotos.length
+      evidenceCount: newStatusEvidence.length,
+      publicEvidenceCount: newStatusEvidence.filter((photo) => photo.customerVisible !== false).length
     }),
     updatedAt: now()
   };
@@ -1389,7 +1407,7 @@ async function confirmStatusChange() {
     const saved = await saveRecord("order", updated);
     const current = state.orders.find((item) => item.id === saved.id) || saved || updated;
     const whatsappOpened = client?.phone
-      ? Boolean(openWhatsApp(client.phone, statusUpdateMessage(current, notes), whatsappWindow))
+      ? Boolean(openWhatsApp(client.phone, statusUpdateMessage(current, shareWithCustomer ? notes : ""), whatsappWindow))
       : false;
     if (!client?.phone && whatsappWindow && !whatsappWindow.closed) whatsappWindow.close();
     closeStatusChangeDialog();
@@ -1604,6 +1622,7 @@ function showOrderForm(order = null) {
   $("orderQuotePart").value = order?.quotePartName || suggestPartFromDiagnosis(order?.issue || "", order?.device || "");
   $("orderReplacedPartsDisposition").value = order?.replacedPartsDisposition || "Entregar al cliente";
   $("orderCustomerAuthorization").checked = Boolean(order?.customerAuthorization);
+  $("orderEvidencePublic").checked = true;
   renderQualityChecklists(order);
   renderPatternGrid();
   renderEvidencePreview();
@@ -1643,6 +1662,7 @@ function resetForm(kind) {
     renderSelectedParts();
     $("orderQuotePart").value = "";
     $("orderPattern").value = "";
+    $("orderEvidencePublic").checked = true;
     renderPatternGrid();
     renderQualityChecklists();
   }
@@ -1841,7 +1861,14 @@ async function handleEvidenceFiles(event) {
   if (files.some((file) => !file.type.startsWith("image/"))) throw new Error("Solo puedes adjuntar imagenes como evidencia.");
   if (files.some((file) => file.size > 15 * 1024 * 1024)) throw new Error("Cada fotografia debe pesar menos de 15 MB.");
   const photos = await Promise.all(files.map(fileToPhoto));
-  currentEvidencePhotos = [...currentEvidencePhotos, ...photos].slice(0, 10);
+  const customerVisible = $("orderEvidencePublic")?.checked !== false;
+  const stage = $("orderStatus")?.value || "Recibido";
+  currentEvidencePhotos = [...currentEvidencePhotos, ...photos.map((photo) => ({
+    ...photo,
+    customerVisible,
+    stage,
+    status: stage
+  }))].slice(0, 10);
   renderEvidencePreview();
   event.target.value = "";
 }
@@ -2026,9 +2053,11 @@ async function searchPortal(event) {
   const lookup = $("portalFolio").value.trim();
   const code = $("portalCode").value.trim();
   if (!lookup || !code) return;
-  $("portalResult").innerHTML = empty("Consultando BD...");
+  $("portalResult").setAttribute("aria-busy", "true");
+  updatePortalResult(empty("Consultando BD..."));
   currentPortalOrder = null;
   currentPortalClient = null;
+  currentPortalBusiness = null;
   try {
     const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(lookup)}?code=${encodeURIComponent(code)}&t=${Date.now()}`, {
       cache: "no-store",
@@ -2036,79 +2065,244 @@ async function searchPortal(event) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.order) {
-      $("portalResult").innerHTML = empty("Orden no encontrada en BD");
+      updatePortalResult(portalNotFound());
       return;
     }
     const order = payload.order;
     const client = payload.client || {};
     currentPortalOrder = order;
     currentPortalClient = client;
-    const delivered = order.status === "Entregado";
-    $("portalResult").innerHTML = renderPortalOrder(order, client);
+    currentPortalBusiness = payload.business || {};
+    updatePortalResult(renderPortalOrder(order, client, currentPortalBusiness));
   } catch (error) {
-    $("portalResult").innerHTML = empty(`No se pudo consultar BD: ${error.message}`);
+    updatePortalResult(portalNetworkError());
+  } finally {
+    $("portalResult").setAttribute("aria-busy", "false");
   }
 }
 
 function portalWelcome() {
   return `
-    <div class="portal-premium portal-empty">
-      <div class="status-visual received"><div class="pcfix-status-emblem"><span></span><img src="assets/logo-pcfix.png" alt=""></div></div>
-      <h2>Consulta tu reparacion</h2>
-      <p>Ingresa tu folio o WhatsApp junto con el codigo seguro incluido en tu enlace.</p>
+    <div class="portal-v2 portal-v2-welcome">
+      <div class="portal-v2-welcome-mark"><img src="assets/logo-pcfix.png" alt=""></div>
+      <span class="portal-v2-kicker">Pasaporte digital de reparacion</span>
+      <h2>Tu equipo, siempre visible</h2>
+      <p>Consulta el avance, las evidencias, autorizaciones y comprobantes de tu servicio.</p>
+      <div class="portal-v2-trust-row"><span>Enlace privado</span><span>Actualizacion en linea</span><span>Respaldo PCFix</span></div>
     </div>`;
 }
 
-function renderPortalOrder(order, client = {}) {
+function updatePortalResult(html) {
+  const result = $("portalResult");
+  const update = () => { result.innerHTML = html; };
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (document.startViewTransition && !reducedMotion) document.startViewTransition(update);
+  else update();
+}
+
+function portalNotFound() {
+  return `<div class="portal-v2 portal-v2-message"><span>Consulta protegida</span><h2>No pudimos mostrar esta reparacion</h2><p>Verifica el folio o WhatsApp y el codigo privado incluido en tu enlace.</p></div>`;
+}
+
+function portalNetworkError() {
+  return `<div class="portal-v2 portal-v2-message"><span>Conexion temporalmente no disponible</span><h2>Tu informacion sigue protegida</h2><p>Espera un momento y vuelve a consultar.</p><button class="btn primary" type="button" onclick="retryPortalSearch()">Intentar nuevamente</button></div>`;
+}
+
+function portalStatusExperience(status = "") {
+  return ({
+    Recibido: { title: "Tu equipo esta bajo resguardo", text: "Registramos sus condiciones de ingreso y lo preparamos para revision tecnica.", next: "Siguiente: diagnostico inicial", tone: "received" },
+    Diagnostico: { title: "Estamos identificando la causa", text: "El tecnico realiza pruebas para confirmar la falla y definir la solucion adecuada.", next: "Siguiente: propuesta de reparacion", tone: "diagnostic" },
+    "Esperando pieza": { title: "La refaccion esta en camino", text: "La reparacion esta preparada y continuara en cuanto recibamos la pieza compatible.", next: "Siguiente: instalacion y reparacion", tone: "waiting" },
+    "En reparacion": { title: "Tu equipo esta en manos del tecnico", text: "La solucion autorizada se encuentra en proceso con control de piezas y evidencia.", next: "Siguiente: pruebas de funcionamiento", tone: "repair" },
+    Listo: { title: "Tu equipo esta listo para volver contigo", text: "Finalizamos la reparacion y las pruebas registradas. Ya puedes coordinar la entrega.", next: "Accion: coordinar recoleccion", tone: "ready" },
+    Entregado: { title: "Servicio completado", text: "El equipo fue entregado y su comprobante, pruebas y garantia permanecen disponibles.", next: "Garantia activa por 90 dias", tone: "delivered" },
+    Cancelado: { title: "Servicio detenido", text: "La reparacion fue cancelada. PCFix puede ayudarte con cualquier aclaracion.", next: "Accion: contactar a PCFix", tone: "canceled" }
+  })[status] || { title: "Reparacion en seguimiento", text: "PCFix mantiene actualizado el avance de tu equipo.", next: "Consulta la actividad reciente", tone: "received" };
+}
+
+function portalRoute(order) {
+  const actualStatuses = new Set((order.statusHistory || []).map((item) => item.status).filter(Boolean));
+  actualStatuses.add(order.status);
+  const route = order.status === "Cancelado"
+    ? ["Recibido", "Diagnostico", "Cancelado"]
+    : ["Recibido", "Diagnostico", ...(actualStatuses.has("Esperando pieza") ? ["Esperando pieza"] : []), "En reparacion", "Listo", "Entregado"];
+  const currentIndex = route.indexOf(order.status);
+  return route.map((status, index) => ({
+    status,
+    state: status === order.status
+      ? "current"
+      : order.status === "Cancelado"
+        ? (actualStatuses.has(status) ? "done" : currentIndex > index ? "skipped" : "pending")
+        : currentIndex > index ? "done" : "pending"
+  }));
+}
+
+function portalHistoryFeed(order) {
+  const history = [...(order.statusHistory || [])];
+  if (!history.length) history.push({ status: order.status, at: order.updatedAt || order.createdAt || "" });
+  return history.slice().reverse().map((item, index) => `
+    <article class="portal-v2-feed-item ${index === 0 ? "is-latest" : ""}">
+      <i aria-hidden="true"></i>
+      <div><strong>${escapeHtml(item.status || "Actualizacion")}</strong><time datetime="${escapeAttr(item.at || "")}">${escapeHtml(formatDateTime(item.at || ""))}</time></div>
+      ${item.publicNote ? `<p>${escapeHtml(item.publicNote)}</p>` : ""}
+      ${Number(item.evidenceCount || 0) ? `<small>${Number(item.evidenceCount)} evidencia(s) compartida(s)</small>` : ""}
+    </article>`).join("");
+}
+
+function portalEvidenceGallery(order) {
+  const photos = (order.statusEvidencePhotos || []).filter((photo) => photoSource(photo));
+  if (!photos.length) return "";
+  const groups = photos.reduce((result, photo) => {
+    const stage = photo.stage || photo.status || "Actualizacion";
+    if (!result[stage]) result[stage] = [];
+    result[stage].push(photo);
+    return result;
+  }, {});
+  const comparison = photos.length > 1 ? `
+    <div class="portal-v2-comparison">
+      <figure><span>Ingreso</span><img src="${escapeHtml(photoSource(photos[0]))}" loading="lazy" alt="Estado del equipo al inicio"></figure>
+      <figure><span>Actualizacion reciente</span><img src="${escapeHtml(photoSource(photos.at(-1)))}" loading="lazy" alt="Estado reciente del equipo"></figure>
+    </div>` : "";
+  return `<section class="portal-v2-section portal-v2-evidence"><div class="portal-v2-section-head"><div><span>Evidencia compartida</span><h3>La reparacion, documentada</h3></div><b>${photos.length} foto(s)</b></div>${comparison}${Object.entries(groups).map(([stage, rows]) => `
+    <div class="portal-v2-photo-stage"><strong>${escapeHtml(stage)}</strong><div class="portal-v2-photo-grid">${rows.map((photo) => `<figure><img src="${escapeHtml(photoSource(photo))}" loading="lazy" alt="${escapeHtml(photo.name || `Evidencia ${stage}`)}"><figcaption>${escapeHtml(formatDateTime(photo.at || ""))}</figcaption></figure>`).join("")}</div></div>`).join("")}</section>`;
+}
+
+function portalActionBar(order, business = {}) {
+  const buttons = [];
+  const approvalPending = (order.approvalStatus || "Pendiente") === "Pendiente" && !["Entregado", "Cancelado"].includes(order.status);
+  if (approvalPending) buttons.push(`<button class="btn primary" type="button" onclick="focusPortalApproval()">Revisar presupuesto</button>`);
+  if (order.status === "Listo") buttons.push(`<button class="btn ${approvalPending ? "ghost" : "primary"}" type="button" onclick="openPortalWhatsApp()">Coordinar entrega</button>`);
+  if (order.status === "Entregado") {
+    buttons.push(`<button class="btn primary" type="button" onclick="printPortalOrder()">Descargar comprobante</button>`);
+    buttons.push(`<button class="btn ghost" type="button" onclick="openFacebookReview()">Recomendar PCFix</button>`);
+  }
+  if (!buttons.length) buttons.push(`<button class="btn primary" type="button" onclick="openPortalWhatsApp()">Contactar a PCFix</button>`);
+  if (business.address) buttons.push(`<button class="btn ghost" type="button" onclick="openPortalMap()">Como llegar</button>`);
+  return `<nav class="portal-v2-actions" aria-label="Acciones de la reparacion">${buttons.join("")}</nav>`;
+}
+
+function portalFeedback(order) {
+  if (order.status !== "Entregado") return "";
+  if (order.customerFeedback?.score) return `<section class="portal-v2-section portal-v2-feedback is-complete"><div><span>Experiencia registrada</span><h3>Gracias por evaluar nuestro servicio</h3><p>Tu calificacion de ${Number(order.customerFeedback.score)}/5 ayuda a PCFix a seguir mejorando.</p></div></section>`;
+  const labels = ["Necesita mejorar", "Regular", "Bien", "Muy bien", "Excelente"];
+  return `<section class="portal-v2-section portal-v2-feedback"><div><span>Tu experiencia</span><h3>Como fue el servicio de PCFix?</h3><p>Selecciona una calificacion y comparte un comentario opcional.</p></div><div class="portal-v2-score" role="group" aria-label="Calificacion del servicio">${labels.map((label, index) => `<button type="button" onclick="selectPortalScore(${index + 1})" data-score="${index + 1}" aria-pressed="false"><strong>${index + 1}</strong><span>${label}</span></button>`).join("")}</div><label>Comentario opcional<textarea id="portalFeedbackComment" rows="3" maxlength="500" placeholder="Que hicimos bien o que podemos mejorar?"></textarea></label><button class="btn primary" type="button" onclick="submitPortalFeedback()">Enviar evaluacion</button></section>`;
+}
+
+function renderPortalOrder(order, client = {}, business = {}) {
   const delivered = order.status === "Entregado";
   const progress = getStatusProgress(order.status);
   const parts = order.suppliedParts || [];
-  const history = order.statusHistory || [];
   const canceled = order.status === "Cancelado";
-  const statusIndex = repairProgressStatuses.indexOf(order.status);
+  const approvalPending = (order.approvalStatus || "Pendiente") === "Pendiente" && !["Entregado", "Cancelado"].includes(order.status);
   const finalQuality = qualitySummary(order.finalChecklist || {});
+  const experience = portalStatusExperience(order.status);
+  const route = portalRoute(order);
+  const balance = Math.max(0, Number(order.total || 0) - Number(order.deposit || 0));
   return `
-      <div class="portal-premium portal-order-card">
-        <div class="portal-hero-premium">
-          <div class="status-visual ${statusClass(order.status)}">
+      <main class="portal-v2 portal-v2-passport">
+        <header class="portal-v2-hero ${canceled ? "is-canceled" : ""}">
+          <div class="status-visual ${experience.tone}">
             <div class="pcfix-status-emblem"><span></span><img src="assets/logo-pcfix.png" alt="Animacion de estado PCFix"></div>
           </div>
-          <div>
-            <span class="portal-eyebrow">Seguimiento de reparacion</span>
-            <h2>${escapeHtml(order.folio)} | ${escapeHtml(order.device)}</h2>
-            <p>${escapeHtml(client.name || "Cliente")} | ${escapeHtml(order.status || "")}</p>
+          <div class="portal-v2-hero-copy">
+            <div class="portal-v2-order-line"><span>${escapeHtml(order.folio)}</span><b>${escapeHtml(order.status || "")}</b></div>
+            <h2>${escapeHtml(experience.title)}</h2>
+            <p>${escapeHtml(experience.text)}</p>
+            <strong>${escapeHtml(experience.next)}</strong>
           </div>
-          <div class="progress-orbit ${canceled ? "is-canceled" : ""}" style="--progress:${progress}" role="progressbar" aria-label="Avance de reparacion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><strong>${progress}%</strong><span>${canceled ? "Interrumpido" : "Avance"}</span></div>
-        </div>
-        ${canceled ? `<div class="portal-canceled-notice"><strong>Servicio cancelado</strong><span>El progreso se detuvo. Contacta a PCFix para cualquier aclaracion.</span></div>` : `<div class="portal-progress" aria-hidden="true"><i style="width:${progress}%"></i></div>`}
-        <div class="timeline repair-timeline">${repairProgressStatuses.map((s, index) => `<span class="${index <= statusIndex ? "done" : ""} ${index === statusIndex ? "current" : ""}"><i></i>${escapeHtml(s)}</span>`).join("")}</div>
-        <div class="portal-detail">
-          <strong>Garantia</strong><span>${Number(order.warrantyDays || 90)} dias</span>
-          <strong>Ultima actualizacion</strong><span>${escapeHtml(formatDate(order.updatedAt || order.updated_at || ""))}</span>
-          <strong>Entrega estimada</strong><span>${escapeHtml(order.promisedAt ? formatDateTime(order.promisedAt) : "Por confirmar")}</span>
-          <strong>Presupuesto</strong><span>${escapeHtml(order.approvalStatus || "Pendiente")}</span>
-          <strong>Tecnico</strong><span>${escapeHtml(order.technician || "Equipo PCFix")}</span>
-          <strong>Serie / IMEI</strong><span>${escapeHtml(order.serial || "No registrado")}</span>
-          <strong>Total</strong><span>${money.format(Number(order.total || 0))}</span>
-          <strong>Saldo</strong><span>${money.format(Math.max(0, Number(order.total || 0) - Number(order.deposit || 0)))}</span>
-        </div>
-        <div class="portal-info-grid">
+          <div class="portal-v2-progress" role="progressbar" aria-label="Avance de reparacion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><strong>${canceled ? "Detenido" : `${progress}%`}</strong><span>Avance registrado</span></div>
+        </header>
+        <section class="portal-v2-route" aria-label="Ruta de reparacion">${route.map((item) => `<div class="${item.state}"><i></i><span>${escapeHtml(item.status)}</span>${item.state === "skipped" ? `<small>No requerida</small>` : ""}</div>`).join("")}</section>
+        <section class="portal-v2-facts" aria-label="Resumen de la orden">
+          <article><span>Equipo</span><strong>${escapeHtml(order.device || "Equipo")}</strong></article>
+          <article><span>Entrega estimada</span><strong>${escapeHtml(order.promisedAt ? formatDateTime(order.promisedAt) : "Por confirmar")}</strong></article>
+          <article><span>Presupuesto</span><strong>${escapeHtml(order.approvalStatus || "Pendiente")}</strong></article>
+          <article><span>Saldo</span><strong>${money.format(balance)}</strong></article>
+        </section>
+        <section class="portal-v2-section"><div class="portal-v2-section-head"><div><span>Informacion del servicio</span><h3>Detalles de tu equipo</h3></div><b>${escapeHtml(client.name || "Cliente")}</b></div><div class="portal-v2-details">
           <article><strong>Falla / diagnostico</strong><span>${escapeHtml(order.issue || "En revision")}</span></article>
           <article><strong>Condiciones del equipo</strong><span>${escapeHtml(order.physicalState || order.notes || "Sin condiciones registradas")}</span></article>
           <article><strong>Accesorios recibidos</strong><span>${escapeHtml(order.accessories || "Sin accesorios registrados")}</span></article>
           <article><strong>Refacciones utilizadas</strong><span>${parts.length ? parts.map((part) => `${escapeHtml(part.qty || 1)}x ${escapeHtml(part.part || "")}`).join(", ") : "Sin refacciones registradas"}</span></article>
-        </div>
-        ${delivered ? `<section class="quality-certificate"><div><span class="portal-eyebrow">Certificado de funcionamiento</span><h3>${finalQuality.correct} pruebas correctas | ${finalQuality.failures} observaciones</h3></div><div class="quality-certificate-grid">${qualityChecklistHtml(order.finalChecklist || {})}</div></section>` : ""}
-        ${(order.approvalStatus || "Pendiente") === "Pendiente" ? `
-          <section class="portal-approval">
-            <div><span class="portal-eyebrow">Autorizacion digital</span><h3>Confirma el presupuesto de ${money.format(Number(order.total || 0))}</h3><p>La decision quedara vinculada al folio, fecha y codigo seguro.</p></div>
+        </div></section>
+        <section class="portal-v2-section portal-v2-activity"><div class="portal-v2-section-head"><div><span>Actividad verificada</span><h3>Historia de la reparacion</h3></div><b>${escapeHtml(formatDateTime(order.updatedAt || ""))}</b></div><div class="portal-v2-feed">${portalHistoryFeed(order)}</div></section>
+        ${portalEvidenceGallery(order)}
+        ${delivered ? `<section class="portal-v2-section portal-v2-certificate"><div class="portal-v2-section-head"><div><span>Certificado de funcionamiento</span><h3>Equipo validado por PCFix</h3></div><b>${finalQuality.correct}/${finalQuality.total} correctas</b></div><div class="quality-certificate-grid">${qualityChecklistHtml(order.finalChecklist || {})}</div><p>Garantia de ${Number(order.warrantyDays || 90)} dias naturales conforme a las condiciones de la orden.</p></section>` : ""}
+        ${portalFeedback(order)}
+        ${approvalPending ? `
+          <section id="portalApprovalSection" class="portal-v2-section portal-v2-approval">
+            <div><span>Autorizacion digital</span><h3>Presupuesto de ${money.format(Number(order.total || 0))}</h3><p>Tu decision quedara vinculada al folio, fecha y enlace privado.</p></div>
             <label>Nombre de quien autoriza<input id="portalApprovalName" value="${escapeAttr(client.name || "")}" maxlength="120"></label>
             <div class="record-actions"><button class="btn primary" type="button" onclick="submitPortalDecision('Aprobado')">Aprobar presupuesto</button><button class="btn ghost" type="button" onclick="submitPortalDecision('Rechazado')">Rechazar</button></div>
           </section>` : ""}
-        ${history.length ? `<div class="portal-history"><strong>Historial</strong>${history.map((item) => `<span>${escapeHtml(item.status || "")} | ${escapeHtml(formatDate(item.at || ""))}</span>`).join("")}</div>` : ""}
-        ${(order.statusEvidencePhotos || []).some((photo) => photoSource(photo)) ? `<div class="photo-strip readonly">${(order.statusEvidencePhotos || []).filter((photo) => photoSource(photo)).slice(0, 6).map((photo) => `<figure><img src="${escapeHtml(photoSource(photo))}" alt="${escapeHtml(photo.name || "Evidencia")}"></figure>`).join("")}</div>` : ""}
-        ${delivered ? `<div class="record-actions"><button class="btn primary" type="button" onclick="printPortalOrder()">Descargar PDF</button></div>` : ""}
-      </div>`;
+        <footer class="portal-v2-footer"><strong>${escapeHtml(business.name || "PCFix Comitan")}</strong><span>${escapeHtml(business.address || "Comitan de Dominguez, Chiapas")}</span><small>Ultima actualizacion ${escapeHtml(formatDateTime(order.updatedAt || ""))}</small></footer>
+        ${portalActionBar(order, business)}
+      </main>`;
+}
+
+function retryPortalSearch() {
+  $("portalForm").requestSubmit();
+}
+
+function focusPortalApproval() {
+  const section = $("portalApprovalSection");
+  if (!section) return;
+  section.scrollIntoView({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+  $("portalApprovalName")?.focus({ preventScroll: true });
+}
+
+function openPortalWhatsApp() {
+  const phone = currentPortalBusiness?.phone || "";
+  if (!phone) {
+    showAlert("El telefono de PCFix no esta configurado.", "error");
+    return;
+  }
+  const message = `Hola PCFix Comitan, necesito ayuda con la orden ${currentPortalOrder?.folio || ""} de ${currentPortalOrder?.device || "mi equipo"}.`;
+  openWhatsApp(phone, message);
+}
+
+function openPortalMap() {
+  const address = currentPortalBusiness?.address || "";
+  if (!address) return;
+  window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`, "_blank", "noreferrer");
+}
+
+function openFacebookReview() {
+  window.open(facebookReviewUrl, "_blank", "noreferrer");
+}
+
+function selectPortalScore(score) {
+  document.querySelectorAll(".portal-v2-score button").forEach((button) => {
+    const selected = Number(button.dataset.score) === Number(score);
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+}
+
+async function submitPortalFeedback() {
+  const selected = document.querySelector(".portal-v2-score button.selected");
+  const score = Number(selected?.dataset.score || 0);
+  if (!score) {
+    showAlert("Selecciona una calificacion del 1 al 5.", "error");
+    return;
+  }
+  const lookup = $("portalFolio").value.trim();
+  const code = $("portalCode").value.trim();
+  const comment = $("portalFeedbackComment")?.value.trim() || "";
+  try {
+    const response = await fetch(`${session.baseUrl || API_DEFAULT}/api/public/orders/${encodeURIComponent(lookup)}/feedback`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      body: JSON.stringify({ code, score, comment })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "No se pudo registrar la evaluacion");
+    showAlert("Gracias. Tu evaluacion fue registrada.", "ok");
+    $("portalForm").requestSubmit();
+  } catch (error) {
+    showAlert(error.message, "error");
+  }
 }
 
 async function submitPortalDecision(decision) {
@@ -2137,7 +2331,7 @@ async function submitPortalDecision(decision) {
 }
 
 function printPortalOrder() {
-  if (!currentPortalOrder) {
+  if (!currentPortalOrder || currentPortalOrder.status !== "Entregado") {
     showAlert("Primero consulta una orden entregada.", "error");
     return;
   }
@@ -2429,8 +2623,10 @@ function updateHistory(existing, status, details = {}) {
       at: now(),
       user: session.user?.name || "Sistema",
       ...(note ? { note } : {}),
+      ...(details.publicNote ? { publicNote: String(details.publicNote).trim() } : {}),
       ...(details.tests ? { tests: details.tests } : {}),
-      evidenceCount: Math.max(0, Number(details.evidenceCount || 0))
+      evidenceCount: Math.max(0, Number(details.evidenceCount || 0)),
+      publicEvidenceCount: Math.max(0, Number(details.publicEvidenceCount || 0))
     });
   }
   return history;
@@ -2511,10 +2707,6 @@ function getSubdealer(item) {
 
 function normalize(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
-}
-
-function randomCode() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
 function waUrl(phone, text) {
@@ -2610,6 +2802,13 @@ Object.assign(window, {
   addCommonFailure,
   printPortalOrder,
   submitPortalDecision,
+  retryPortalSearch,
+  focusPortalApproval,
+  openPortalWhatsApp,
+  openPortalMap,
+  openFacebookReview,
+  selectPortalScore,
+  submitPortalFeedback,
   togglePatternPoint,
   removePurchaseItemRow,
   printOrderById,

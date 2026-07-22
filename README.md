@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-guardado-rapido-20260722-11`
+`pcfix-portal-experience-20260722-12`
 
 ## Que subir a GitHub
 
@@ -15,6 +15,7 @@ Incluye:
 - `index.html`
 - `app.js`
 - `styles.css`
+- `portal-v2.css`
 - `service-worker.js`
 - `manifest.webmanifest`
 - `assets/`
@@ -52,7 +53,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-guardado-rapido-20260722-11
+pcfix-portal-experience-20260722-12
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -62,7 +63,7 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-guardado-rapido-20260722-11
+pcfix-backend-portal-experience-20260722-12
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:
@@ -87,10 +88,15 @@ select count(*) from purchases where archived = false;
 - Los estados Listo y Entregado exigen completar las pruebas de entrega; al confirmar se prepara el aviso de WhatsApp con el nuevo estatus y la liga segura del portal.
 - Los guardados ya no descargan nuevamente toda la base: el backend devuelve el registro confirmado por PostgreSQL y la interfaz actualiza solo el modulo afectado.
 - Ordenes y compras recibidas sincronizan inventario, movimientos y orden relacionada en segundo plano, sin bloquear el mensaje de guardado.
+- Portal de cliente renovado como pasaporte de reparacion: etapa actual, recorrido real, actividad, evidencia por proceso y certificado de entrega.
+- Acciones contextuales para autorizar presupuesto, coordinar entrega, descargar comprobante, ubicar la tienda y evaluar el servicio.
 
 ## Seguridad y calidad
 
 - Portal publico protegido por folio o WhatsApp mas codigo de seguimiento; el enlace enviado al cliente ya incluye el codigo.
+- Las ordenes nuevas reciben codigos de seguimiento criptograficamente seguros; los codigos existentes permanecen vigentes.
+- Notas internas y fotografias privadas no salen por la API publica; cada cambio de estatus permite decidir que compartir con el cliente.
+- Las evaluaciones posteriores a la entrega se guardan directamente en PostgreSQL y quedan vinculadas a la orden.
 - Datos internos filtrados por rol y credenciales de desbloqueo cifradas, auditadas y eliminadas al cerrar la orden.
 - RLS habilitado y acceso directo de los roles publicos de Supabase revocado solo en las tablas de PCFix.
 - Fotografias comprimidas a 1280 px y guardadas directamente dentro de la orden en PostgreSQL, sin depender de Storage.

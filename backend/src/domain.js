@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 export const REPAIR_PROGRESS_STATUSES = ["Recibido", "Diagnostico", "Esperando pieza", "En reparacion", "Listo", "Entregado"];
 export const REQUIRED_QUALITY_KEYS = ["power", "charge", "display", "touch", "audio", "cameras", "biometrics", "connectivity"];
 
@@ -8,6 +10,23 @@ export function repairProgress(status) {
 
 export function pendingQualityChecks(checklist = {}) {
   return REQUIRED_QUALITY_KEYS.filter((key) => !checklist[key] || checklist[key] === "No probado");
+}
+
+export function createTrackingCode(bytes = 18) {
+  return randomBytes(Math.max(16, Number(bytes) || 18)).toString("base64url");
+}
+
+export function publicStatusHistory(history = []) {
+  return (Array.isArray(history) ? history : []).map((entry) => ({
+    status: String(entry?.status || ""),
+    at: entry?.at || "",
+    publicNote: String(entry?.publicNote || "").trim(),
+    evidenceCount: Math.max(0, Number(entry?.publicEvidenceCount ?? entry?.evidenceCount ?? 0))
+  }));
+}
+
+export function publicEvidencePhotos(photos = []) {
+  return (Array.isArray(photos) ? photos : []).filter((photo) => photo && photo.customerVisible !== false);
 }
 
 export function financialSummary(orders = [], warrantyCost = 0) {

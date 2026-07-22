@@ -4,10 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PCFix Comitan | Sistema</title>
-    <meta name="pcfix-version" content="pcfix-guardado-rapido-20260722-11">
+    <meta name="pcfix-version" content="pcfix-portal-experience-20260722-12">
+    <meta name="referrer" content="no-referrer">
     <meta name="theme-color" content="#0B3B63">
     <link rel="icon" href="assets/logo-pcfix.png" type="image/png">
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="portal-v2.css">
   </head>
   <body>
     <section id="loginScreen" class="login-screen">
@@ -161,6 +163,7 @@
             <label>Evidencia fotografica
               <input id="orderEvidence" type="file" accept="image/*" multiple>
             </label>
+            <label class="check-field evidence-visibility"><input id="orderEvidencePublic" type="checkbox" checked> Visible para el cliente</label>
             <div id="evidencePreview" class="photo-strip"></div>
             <section class="quality-workspace">
               <div class="quality-head"><div><span>Control tecnico</span><h2>Recepcion y pruebas funcionales</h2></div><small>El resultado queda ligado a la orden.</small></div>
@@ -369,7 +372,7 @@
               <label>Codigo de seguimiento<input id="portalCode" placeholder="Codigo incluido en tu enlace" autocomplete="one-time-code" required></label>
               <button class="btn primary" type="submit">Consultar</button>
             </form>
-            <section class="portal-result-shell"><div id="portalResult" class="portal-result"></div></section>
+            <section class="portal-result-shell"><div id="portalResult" class="portal-result" role="status" aria-live="polite" aria-busy="false"></div></section>
           </div>
         </section>
 
@@ -447,6 +450,7 @@
           <div id="statusChangeChecklist" class="quality-checklist status-quality-checklist"></div>
         </section>
         <label>Observaciones del cambio<textarea id="statusChangeNotes" rows="3" placeholder="Trabajo realizado, resultado de pruebas o indicaciones para el cliente..."></textarea></label>
+        <label class="check-field evidence-visibility"><input id="statusChangeShareWithCustomer" type="checkbox" checked> Compartir observacion y evidencias con el cliente</label>
         <label>Evidencia fotografica del estatus<input id="statusChangeEvidence" type="file" accept="image/*" multiple></label>
         <div id="statusChangeEvidencePreview" class="photo-strip status-evidence-preview"></div>
         <div class="status-whatsapp-notice"><span></span><div><strong>Notificacion al cliente</strong><small>Al guardar se abrira WhatsApp con el estatus y la liga segura de seguimiento.</small></div></div>
