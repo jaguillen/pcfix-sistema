@@ -1,4 +1,4 @@
-const PCFIX_FRONTEND_VERSION = "pcfix-flujo-estatus-20260722-10";
+const PCFIX_FRONTEND_VERSION = "pcfix-guardado-rapido-20260722-11";
 window.PCFIX_FRONTEND_VERSION = PCFIX_FRONTEND_VERSION;
 const API_DEFAULT = "https://pcfix-backend.onrender.com";
 const EMAIL_DEFAULT = "admin@pcfix.local";
@@ -411,18 +411,93 @@ async function refreshStateIfChanged() {
 }
 
 async function saveRecord(type, data) {
-  const collectionMap = {
-    client: state.clients, supplier: state.suppliers, inventory: state.inventory, order: state.orders,
-    purchase: state.purchases, payment: state.payments, appointment: state.appointments,
-    warrantyClaim: state.warrantyClaims, settings: [state.settings]
-  };
-  const existing = (collectionMap[type] || []).find((row) => row?.id === data.id);
+  const existing = getStateCollection(type).find((row) => row?.id === data.id);
   const payload = await api(`/api/records/${type}`, {
     method: "POST",
     body: JSON.stringify({ id: data.id, data, expectedUpdatedAt: existing?.updatedAt || "", detail: "Guardado directo BD" })
   });
-  await loadStateFromDb();
-  return payload.data || payload;
+  const saved = payload.data || payload;
+  patchStateRecord(type, saved);
+  lastStateRevision = payload.revision || lastStateRevision;
+  lastDatabaseLoadAt = Date.now();
+  render();
+  $("connectionLabel").textContent = `Guardado en BD ${new Date().toLocaleTimeString("es-MX")}`;
+  queueRelatedRefresh(type, saved, existing);
+  return saved;
+}
+
+const stateCollectionKey = {
+  client: "clients",
+  supplier: "suppliers",
+  inventory: "inventory",
+  order: "orders",
+  purchase: "purchases",
+  payment: "payments",
+  appointment: "appointments",
+  warrantyClaim: "warrantyClaims",
+  inventoryMovement: "inventoryMovements",
+  auditEntry: "auditLog"
+};
+
+function getStateCollection(type) {
+  if (type === "settings") return state.settings?.id ? [state.settings] : [];
+  return state[stateCollectionKey[type]] || [];
+}
+
+function patchStateRecord(type, record) {
+  if (!record) return;
+  if (type === "settings") {
+    state.settings = { ...clone(defaultState.settings), ...record };
+    return;
+  }
+  const key = stateCollectionKey[type];
+  if (!key) return;
+  const rows = [...(state[key] || [])];
+  const index = rows.findIndex((row) => row.id === record.id);
+  if (index >= 0) rows[index] = record;
+  else rows.unshift(record);
+  state[key] = rows;
+}
+
+async function refreshRecordTypes(types = []) {
+  const uniqueTypes = [...new Set(types)].filter((type) => stateCollectionKey[type]);
+  if (!uniqueTypes.length) return;
+  const responses = await Promise.all(uniqueTypes.map(async (type) => ({
+    type,
+    rows: await api(`/api/records/${type}?t=${Date.now()}`)
+  })));
+  responses.forEach(({ type, rows }) => {
+    state[stateCollectionKey[type]] = (rows || []).map((row) => row.data || row);
+  });
+}
+
+async function refreshSingleRecord(type, recordId) {
+  if (!recordId) return;
+  const payload = await api(`/api/records/${type}/${encodeURIComponent(recordId)}?t=${Date.now()}`);
+  patchStateRecord(type, payload.data || payload);
+}
+
+function queueRelatedRefresh(type, saved, existing) {
+  const refreshTypes = [];
+  let relatedOrderId = "";
+  if (type === "order") refreshTypes.push("inventory", "inventoryMovement");
+  if (type === "purchase" && [saved?.status, existing?.status].some((status) => normalize(status) === "recibido")) {
+    refreshTypes.push("inventory", "inventoryMovement");
+    relatedOrderId = saved?.orderId || existing?.orderId || "";
+  }
+  if (!refreshTypes.length && !relatedOrderId) return;
+  $("connectionLabel").textContent = "Guardado en BD; actualizando relaciones...";
+  Promise.resolve().then(async () => {
+    await Promise.all([
+      refreshRecordTypes(refreshTypes),
+      relatedOrderId ? refreshSingleRecord("order", relatedOrderId) : Promise.resolve()
+    ]);
+    render();
+    lastDatabaseLoadAt = Date.now();
+    $("connectionLabel").textContent = `BD sincronizada ${new Date().toLocaleTimeString("es-MX")}`;
+  }).catch(() => {
+    $("connectionLabel").textContent = "Guardado confirmado; relaciones pendientes de actualizar";
+  });
 }
 
 async function archiveRecord(type, id) {
@@ -820,7 +895,7 @@ function renderTechnicians() {
 
 async function saveTechnician(event) {
   event.preventDefault();
-  await api("/api/users", {
+  const technician = await api("/api/users", {
     method: "POST",
     body: JSON.stringify({
       name: $("technicianName").value.trim(),
@@ -829,8 +904,9 @@ async function saveTechnician(event) {
       role: "technician"
     })
   });
+  state.technicians = sortByName([...(state.technicians || []), technician]);
   $("technicianForm").reset();
-  await loadStateFromDb();
+  render();
   showAlert("Tecnico registrado y disponible para asignar ordenes.", "ok");
 }
 
@@ -838,7 +914,8 @@ async function deactivateTechnician(userId) {
   return runAction(async () => {
     if (!confirm("Desactivar este tecnico? Las ordenes historicas conservaran su nombre.")) return;
     await api(`/api/users/${encodeURIComponent(userId)}/deactivate`, { method: "POST", body: "{}" });
-    await loadStateFromDb();
+    state.technicians = (state.technicians || []).filter((technician) => technician.id !== userId);
+    render();
     showAlert("Tecnico desactivado.", "ok");
   });
 }
@@ -1163,7 +1240,7 @@ async function savePayment(event) {
   const amount = Number($("paymentAmount").value || 0);
   const orderId = $("paymentOrder").value;
   if (!orderId) throw new Error("No hay una orden pendiente seleccionada.");
-  await api(`/api/orders/${encodeURIComponent(orderId)}/payments`, {
+  const result = await api(`/api/orders/${encodeURIComponent(orderId)}/payments`, {
     method: "POST",
     body: JSON.stringify({
     amount,
@@ -1171,7 +1248,11 @@ async function savePayment(event) {
       reference: $("paymentReference").value.trim()
     })
   });
-  await loadStateFromDb();
+  patchStateRecord("payment", result.payment);
+  patchStateRecord("order", result.order);
+  lastStateRevision = result.revision || lastStateRevision;
+  lastDatabaseLoadAt = Date.now();
+  render();
   resetForm("payment");
   showAlert("Pago guardado en BD.", "ok");
 }

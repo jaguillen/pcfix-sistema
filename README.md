@@ -4,7 +4,7 @@ Frontend limpio conectado directo a backend/Postgres. No hay modo offline ni alm
 
 Version frontend:
 
-`pcfix-flujo-estatus-20260722-10`
+`pcfix-guardado-rapido-20260722-11`
 
 ## Que subir a GitHub
 
@@ -52,7 +52,7 @@ window.PCFIX_FRONTEND_VERSION
 Debe devolver:
 
 ```txt
-pcfix-flujo-estatus-20260722-10
+pcfix-guardado-rapido-20260722-11
 ```
 
 Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
@@ -62,7 +62,7 @@ Si la version no coincide, el hosting sigue sirviendo una compilacion anterior.
 Abre `/api/health` y confirma:
 
 ```txt
-pcfix-backend-fotos-directas-20260716-09
+pcfix-backend-guardado-rapido-20260722-11
 ```
 
 Abre `/api/stability` y compara `totals.purchase` contra Supabase:
@@ -85,6 +85,8 @@ select count(*) from purchases where archived = false;
 - La sincronizacion periodica consulta primero una revision ligera y descarga el estado completo solo cuando hay cambios.
 - Cada cambio de estatus abre un flujo unico para registrar pruebas funcionales, observaciones y evidencia fotografica antes de guardar en PostgreSQL.
 - Los estados Listo y Entregado exigen completar las pruebas de entrega; al confirmar se prepara el aviso de WhatsApp con el nuevo estatus y la liga segura del portal.
+- Los guardados ya no descargan nuevamente toda la base: el backend devuelve el registro confirmado por PostgreSQL y la interfaz actualiza solo el modulo afectado.
+- Ordenes y compras recibidas sincronizan inventario, movimientos y orden relacionada en segundo plano, sin bloquear el mensaje de guardado.
 
 ## Seguridad y calidad
 

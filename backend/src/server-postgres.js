@@ -15,7 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8080);
 const jwtSecret = process.env.JWT_SECRET;
 const databaseUrl = process.env.DATABASE_URL;
-const backendVersion = "pcfix-backend-fotos-directas-20260716-09";
+const backendVersion = "pcfix-backend-guardado-rapido-20260722-11";
 
 if (!databaseUrl) {
   console.error("Falta DATABASE_URL. Configura Supabase/Neon/Postgres en Render.");
@@ -1667,9 +1667,9 @@ app.post("/api/orders/:id/payments", requireAuth, requireRole("admin", "manager"
         [nextDeposit, paid, JSON.stringify(orderData), timestamp, orderId]
       );
       await audit(req.user.sub, "payment_create", "payment", paymentId, `${orderRow.folio}: ${amount}`);
-      return { payment, balance: Math.max(0, asNumber(orderRow.total) - nextDeposit), paid };
+      return { payment, order: orderData, balance: Math.max(0, asNumber(orderRow.total) - nextDeposit), paid };
     });
-    res.status(201).json(result);
+    res.status(201).json({ ...result, revision: await getStateRevision() });
   } catch (error) {
     res.status(error?.status || 500).json({ error: error?.message || "No se pudo registrar el pago", code: error?.code || "payment_failed" });
   }
@@ -1682,6 +1682,15 @@ app.get("/api/records/:type", requireAuth, async (req, res) => {
   const includeArchived = req.query.archived === "1";
   const rows = await getNormalizedRecordsForType(type, includeArchived);
   res.json(rows.map((row) => sanitizeEnvelopeForUser(req.user, type, row)));
+});
+
+app.get("/api/records/:type/:id", requireAuth, async (req, res) => {
+  const { type, id: recordId } = req.params;
+  if (!allowedTypes.has(type)) return res.status(400).json({ error: "Tipo no permitido" });
+  if (!canReadType(req.user, type)) return res.status(403).json({ error: "Tu rol no puede consultar este modulo" });
+  const row = await getNormalizedRecordForType(type, recordId, req.query.archived === "1");
+  if (!row) return res.status(404).json({ error: "Registro no encontrado", code: "record_not_found" });
+  res.json(sanitizeEnvelopeForUser(req.user, type, row));
 });
 
 app.get("/api/orders/:id/unlock", requireAuth, async (req, res) => {
@@ -1745,10 +1754,12 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
 
   try {
     const saved = await saveAttempt();
+    const persisted = await getNormalizedRecordForType(type, saved.recordId);
     return res.status(saved.existing ? 200 : 201).json({
       id: saved.recordId,
-      data: saved.data,
-      deduped: saved.recordId !== requestedId
+      data: persisted ? sanitizeEnvelopeForUser(req.user, type, persisted).data : saved.data,
+      deduped: saved.recordId !== requestedId,
+      revision: await getStateRevision()
     });
   } catch (error) {
     if (error?.constraint === "uq_inventory_sku_active") {
@@ -1758,7 +1769,13 @@ app.post("/api/records/:type", requireAuth, requireRole("admin", "manager", "tec
       try {
         const retry = await saveAttempt(appendConsecutive(requestedId, 2));
         await audit(req.user.sub, "dedupe_save", type, retry.recordId, `Conflicto unico resuelto desde ${requestedId}`);
-        return res.status(201).json({ id: retry.recordId, data: retry.data, deduped: true });
+        const persisted = await getNormalizedRecordForType(type, retry.recordId);
+        return res.status(201).json({
+          id: retry.recordId,
+          data: persisted ? sanitizeEnvelopeForUser(req.user, type, persisted).data : retry.data,
+          deduped: true,
+          revision: await getStateRevision()
+        });
       } catch (retryError) {
         error = retryError;
       }
@@ -2238,6 +2255,32 @@ async function getNormalizedRecordsForType(type, includeArchived = false) {
     }));
     return normalizedEnvelope(type, row, data);
   });
+}
+
+async function getNormalizedRecordForType(type, recordId, includeArchived = false) {
+  const table = tableForType(type);
+  if (!table || !recordId) return null;
+  const supportsArchived = !["settings", "inventoryMovement", "auditEntry"].includes(type);
+  const archivedFilter = supportsArchived && !includeArchived ? "AND archived = FALSE" : "";
+  const result = await query(`SELECT * FROM ${table} WHERE id = $1 ${archivedFilter} LIMIT 1`, [recordId]);
+  const row = result.rows[0];
+  if (!row) return null;
+  const data = canonicalDataForRow(type, row);
+  if (type === "order") {
+    const parts = await query("SELECT * FROM order_parts WHERE order_id = $1 ORDER BY created_at ASC", [row.id]);
+    data.suppliedParts = parts.rows.map((part) => ({
+      ...rawObject(part), id: part.id, inventoryId: part.inventory_id || "", purchaseId: part.purchase_id || "",
+      purchaseItemId: part.purchase_item_id || "", part: part.part_name, qty: asNumber(part.qty), cost: asNumber(part.cost),
+      totalCost: asNumber(part.total_cost), createdAt: part.created_at
+    }));
+  }
+  if (type === "purchase") {
+    const items = await query("SELECT * FROM purchase_items WHERE purchase_id = $1", [row.id]);
+    data.items = items.rows.map((item) => ({
+      ...rawObject(item), id: item.id, part: item.part, qty: asNumber(item.qty), cost: asNumber(item.cost)
+    }));
+  }
+  return normalizedEnvelope(type, row, data);
 }
 
 async function archiveNormalizedRecord(type, recordId) {
